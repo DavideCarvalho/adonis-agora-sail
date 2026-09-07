@@ -63,7 +63,7 @@ export function generateComposeFile(services: SailServiceName[]): string {
 
   const document: Record<string, unknown> = { services: fragments };
   if (Object.keys(volumes).length > 0) {
-    document['volumes'] = volumes;
+    document.volumes = volumes;
   }
 
   return HEADER + stringify(document, { lineWidth: 100 });
