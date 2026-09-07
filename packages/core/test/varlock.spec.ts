@@ -81,6 +81,20 @@ describe('buildSchemaSection', () => {
     expect(section).toContain('REDIS_PORT=6379');
     expect(section).toContain('REDIS_HOST=127.0.0.1');
   });
+
+  it('marks coordinates @public and keeps credentials sensitive', () => {
+    const section = buildSchemaSection(['postgres', 'minio']);
+    // Hosts, ports, buckets, regions, endpoints are loopback dev addresses —
+    // public, so log redaction leaves them readable.
+    expect(section).toMatch(/# @public\nDB_HOST=127\.0\.0\.1/);
+    expect(section).toMatch(/# @public\n# @type=number\nDB_PORT=5432/);
+    expect(section).toMatch(/# @public\nS3_BUCKET=local/);
+    // Credentials stay sensitive by default (no @public on their block).
+    const passwordBlock = section.split('\n').findIndex((line) => line === 'DB_PASSWORD=password');
+    expect(passwordBlock).toBeGreaterThan(0);
+    expect(section.split('\n')[passwordBlock - 1]).not.toBe('# @public');
+    expect(section).not.toMatch(/# @public\nAWS_SECRET_ACCESS_KEY/);
+  });
 });
 
 describe('ensureSchemaSection', () => {

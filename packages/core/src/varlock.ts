@@ -99,6 +99,14 @@ function schemaItemBlock(
 ): string {
   const lines = withHeader ? [`# ${service.name} — ${service.summary}`] : [];
   lines.push('# @tag(sail)');
+  // Connection coordinates (hosts, ports, bucket names, regions, endpoints)
+  // are loopback dev addresses, not secrets: mark them @public so varlock's
+  // log redaction does not turn every `127.0.0.1` in terminal output into
+  // `lo▒▒▒▒▒`. Credentials (anything the service would reject an impostor
+  // with) stay sensitive by default.
+  if (!/PASSWORD|SECRET|_KEY/.test(key)) {
+    lines.push('# @public');
+  }
   if (key.endsWith('_PORT')) {
     lines.push('# @type=number');
   }
