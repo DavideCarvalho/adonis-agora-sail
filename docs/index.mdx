@@ -1,0 +1,70 @@
+---
+title: Sail
+description: Docker-powered local dev services for AdonisJS — per-worktree isolated containers, deterministic shifted ports, and agent-friendly commands.
+icon: Ship
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Steps, Step } from 'fumadocs-ui/components/steps';
+
+**`@adonis-agora/sail`** runs your backing services — Postgres, MySQL, Redis,
+Mailpit, MinIO — in Docker, while the app itself stays on the host with
+`node ace serve --hmr`. No PHP-style app container: HMR stays fast and the
+debugger keeps working.
+
+The headline feature is **worktree-native isolation**: every git worktree
+automatically gets its own containers (`myapp-feature-login`) and its own
+host ports (`5432 + hash(name) % 1000`, deterministic per worktree name, so
+teammates on the same worktree name get the same ports). Five worktrees open,
+zero port conflicts, zero flags.
+
+On top of that, sail is **app-aware**: `install` scans `package.json`,
+`start/env.ts` and `config/*.ts` — including active `store: 'lucid'`
+selections in Agora package configs — and wires what it finds (compose file,
+`Env.schema` validations, `.env` defaults, varlock schema, `AGENTS.md`). And
+it is **agent-friendly**: inside an AI coding agent every command defaults to
+JSON, never prompts, and stays idempotent with meaningful exit codes.
+
+## Quickstart
+
+<Steps>
+<Step>
+
+Install and wire the app:
+
+```bash
+node ace add @adonis-agora/sail
+node ace sail:install
+```
+
+</Step>
+<Step>
+
+Start the stack and run migrations — `up` waits for healthchecks, so no
+sleeps are needed:
+
+```bash
+node ace sail:up && node ace migration:run
+```
+
+</Step>
+<Step>
+
+Work as usual. Ask sail for ports instead of hardcoding them:
+
+```bash
+node ace sail:info              # human summary
+node ace sail:psql -- -c 'select 1'
+node ace sail:share             # public URL for previews and webhooks
+```
+
+</Step>
+</Steps>
+
+<Callout type="info">
+Never hardcode `5432` outside the main checkout — host ports shift per
+worktree. `sail:info` (or `--json` for agents) is the source of truth, and
+`sail:up` keeps `.env.local` in sync automatically.
+</Callout>
+
+For the full walkthrough see [Getting Started](/docs/sail/getting-started).

@@ -1,0 +1,73 @@
+{
+  "name": "@adonis-agora/sail",
+  "version": "0.1.0",
+  "description": "Docker-powered local dev environment for AdonisJS — service auto-detection, per-worktree isolation with deterministic ports, and agent-friendly JSON output. Part of the Agora ecosystem.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DavideCarvalho/adonis-agora-sail.git",
+    "directory": "packages/core"
+  },
+  "author": "Davi Carvalho <davi@goflip.ai>",
+  "type": "module",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js",
+      "default": "./dist/src/index.js"
+    },
+    "./configure": {
+      "types": "./dist/configure.d.ts",
+      "import": "./dist/configure.js",
+      "default": "./dist/configure.js"
+    },
+    "./commands": {
+      "types": "./dist/commands/main.d.ts",
+      "import": "./dist/commands/main.js",
+      "default": "./dist/commands/main.js"
+    }
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "CHANGELOG.md",
+    "skills"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepack": "pnpm run build",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@poppinss/utils": "^7.1.0",
+    "yaml": "^2.8.0"
+  },
+  "peerDependencies": {
+    "@adonisjs/core": "^7.3.0"
+  },
+  "devDependencies": {
+    "@adonisjs/assembler": "8.5.0",
+    "@adonisjs/core": "7.5.0",
+    "@types/node": "26.4.0",
+    "typescript": "7.0.2",
+    "vitest": "4.1.11"
+  },
+  "engines": {
+    "node": ">=20.6.0"
+  },
+  "keywords": [
+    "adonisjs",
+    "adonis",
+    "docker",
+    "docker-compose",
+    "sail",
+    "dev-environment",
+    "worktree",
+    "agora"
+  ]
+}

@@ -1,0 +1,153 @@
+---
+title: Getting Started
+description: Install sail, start your services, and learn the everyday commands — including worktrees, varlock, and agents.
+icon: Rocket
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Steps, Step } from 'fumadocs-ui/components/steps';
+
+## Install
+
+<Steps>
+<Step>
+
+Add the package (registers the `sail:*` commands in `adonisrc.ts`):
+
+```bash
+node ace add @adonis-agora/sail
+```
+
+No provider, no config file, nothing boots with the app — sail is dev
+tooling only.
+
+</Step>
+<Step>
+
+Generate the stack:
+
+```bash
+node ace sail:install
+```
+
+With no flags, sail scans the app to decide what to run, in order:
+`--services=` flags win; otherwise `package.json` dependencies (`pg` →
+postgres, `@adonisjs/redis` → redis, …), then `config/database.ts`
+(`client: 'pg'`), `config/redis.ts`, `config/mail.ts` (smtp mailer),
+`config/drive.ts` (s3 disk), then any other `config/*.ts` — an active
+`store: 'lucid'` / `default: 'lucid'` in an Agora config (telescope, media,
+authz, durable…) counts as evidence for the configured database.
+Commented-out alternatives are ignored, SQLite needs nothing, and a
+dependency contradicted by its config (drive installed but fs-only) is
+skipped with a note instead of provisioning an idle container.
+
+Then it wires, all append-only: the managed `compose.yml`, the missing
+`start/env.ts` validations (stock first-party shapes via the codemods —
+`MAIL_MAILER` / `DRIVE_DISK` are reported, never guessed), main-checkout
+defaults into `.env` / `.env.example` for keys missing from both, the
+varlock schema when detected, and an `AGENTS.md` section. Existing
+declarations and values are never overwritten.
+
+</Step>
+<Step>
+
+Start everything:
+
+```bash
+node ace sail:up && node ace migration:run
+```
+
+`up` starts detached and waits for the services' healthchecks, so the
+chained migration never races the database. It also syncs the worktree's
+ports into `.env.local` (plus `.env.test.local`, which is what Adonis
+reads under `NODE_ENV=test`) — Adonis loads those over `.env` on its own,
+so just boot the app normally afterwards.
+
+</Step>
+</Steps>
+
+## Everyday commands
+
+```bash
+node ace sail:info              # ports, dashboards, connection env (--json / --env)
+node ace sail:ps                # container state, health, published ports
+node ace sail:logs --tail 100              # or --json; --follow streams text
+node ace sail:logs redis --since 10m
+node ace sail:exec redis -- redis-cli ping # one-shot, exit code propagates
+node ace sail:psql                         # REPL (also sail:mysql, sail:redis)
+node ace sail:psql -- -c 'select 1'        # one-shot — the form agents must use
+node ace sail:down                         # stop this worktree's stack
+node ace sail:prune --dry-run              # stacks left behind by deleted worktrees
+```
+
+`--follow` refuses `--json` (an endless JSON stream helps nobody). `down
+--volumes` also deletes the data (with confirmation when interactive).
+`prune` without `--dry-run` stops stacks whose compose file is gone from
+disk; other apps' projects are never touched.
+
+## Worktrees
+
+Nothing to configure. In a linked worktree the compose project becomes
+`myapp-feature-login` (isolated containers and volumes) and every host port
+shifts by `sha1(name) % 1000` — deterministic, so the same worktree name
+resolves to the same ports on every machine. The committed `compose.yml` is
+identical everywhere (`${SAIL_POSTGRES_PORT:-5432}` interpolations); sail
+injects the offset ports at runtime, and a bare `docker compose up` still
+works with the defaults.
+
+```bash
+node ace sail:info   # the source of truth — never hardcode 5432
+```
+
+<Callout type="warn">
+Worktree detection needs git ≥ 2.38 (`git worktree list --porcelain -z`).
+On older gits sail silently behaves as the main checkout (base ports,
+bare project name).
+</Callout>
+
+## Service shells
+
+`sail:psql`, `sail:mysql` and `sail:redis` open the client's REPL on a
+terminal. With arguments they run a captured one-shot with a propagated
+exit code — and without a TTY (or with `--json`) the bare form fails with
+the exact re-run instead of hanging:
+
+```bash
+node ace sail:psql -- -c 'select version()'
+node ace sail:mysql -- -e 'show tables'
+node ace sail:redis -- ping
+```
+
+They connect over the container network, so worktree port offsets never
+matter, and they refuse services `install` did not enable.
+
+## Sharing the app
+
+`sail:share` exposes the worktree's `serve` port on a public
+`*.trycloudflare.com` URL via cloudflared (no account; needs the
+`cloudflared` binary) — for previews and, mainly, webhook integrations.
+The port resolves exactly like `serve` does (dot-env `PORT` in loader
+priority + worktree offset; `--port` overrides), falling back to the
+answering base port on cores without the worktree-port patch. It stays
+attached until interrupted; with `--json` it prints one `{ url, local }`
+line on stdout and keeps tunnel logs on stderr — kill the command to stop
+sharing.
+
+## Varlock users
+
+Nothing to configure — sail detects `.env.schema` or the `varlock`
+dependency. `install` additionally declares the service keys in the schema
+(append-only, your types win); the port sync targets the same `.env.local`
+every app uses, so `varlock run -- node ace serve --hmr` keeps working
+unchanged. Encrypted `.env.local` files are detected and skipped with a
+warning instead of corrupted.
+
+## Agents
+
+Inside an AI coding agent every command defaults to JSON, never prompts,
+and stays idempotent with meaningful exit codes. If `install` cannot
+detect anything it fails with the exact `--services=` flags to re-run.
+`install` keeps an `AGENTS.md` section (`<!-- sail:start -->`) describing
+this workflow, and the `sail-basics` skill (`skills/sail-basics/SKILL.md`)
+teaches it: ask sail for ports, sync before migrating, poll logs with
+`--tail` instead of `--follow`.

@@ -1,0 +1,7 @@
+{
+  "title": "Sail",
+  "pages": ["index", "getting-started"],
+  "root": true,
+  "description": "Docker-powered local dev services for AdonisJS — worktree-native isolated stacks, deterministic ports, and agent-friendly JSON output.",
+  "icon": "Ship"
+}
