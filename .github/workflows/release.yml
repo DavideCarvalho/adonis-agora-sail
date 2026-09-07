@@ -63,3 +63,5 @@ jobs:
           # auth e cai no trusted publishing. O secret NPM_TOKEN segue existindo; basta
           # devolver `${{ secrets.NPM_TOKEN }}` aqui pra reverter pro token.
           NODE_AUTH_TOKEN: ''
+
+# touch: force Actions re-scan
