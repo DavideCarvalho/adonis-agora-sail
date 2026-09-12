@@ -1,5 +1,13 @@
 # @adonis-agora/sail
 
+## 0.2.1
+
+### Patch Changes
+
+- [`36d041b`](https://github.com/DavideCarvalho/adonis-agora-sail/commit/36d041b1d7125e1c207cfd7af6fca07485c16a2c) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Correct the `buildSailEnvBlock` doc comment: the `.env.local` block it builds does carry the services' fixed dev credentials, which is why the file is git-ignored.
+
+- [`6ed1fb4`](https://github.com/DavideCarvalho/adonis-agora-sail/commit/6ed1fb4f4dc65590f66918c90b44b23c6622bb12) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Mark sail-managed connection coordinates (hosts, ports, buckets, regions, endpoints) `@public` in the generated `.env.schema` section. They are loopback dev addresses, not secrets — without this, varlock's log redaction turns every `127.0.0.1` in terminal output into `lo▒▒▒▒▒`. Credentials stay sensitive by default.
+
 ## 0.2.0
 
 ### Minor Changes

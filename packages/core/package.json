@@ -1,6 +1,6 @@
 {
   "name": "@adonis-agora/sail",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Docker-powered local dev environment for AdonisJS — service auto-detection, per-worktree isolation with deterministic ports, and agent-friendly JSON output. Part of the Agora ecosystem.",
   "license": "MIT",
   "repository": {
