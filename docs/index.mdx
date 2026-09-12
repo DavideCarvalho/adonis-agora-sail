@@ -5,6 +5,7 @@ icon: Ship
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
+import { Cards, Card } from 'fumadocs-ui/components/card';
 import { Steps, Step } from 'fumadocs-ui/components/steps';
 
 **`@adonis-agora/sail`** runs your backing services — Postgres, MySQL, Redis,
@@ -14,7 +15,7 @@ debugger keeps working.
 
 The headline feature is **worktree-native isolation**: every git worktree
 automatically gets its own containers (`myapp-feature-login`) and its own
-host ports (`5432 + hash(name) % 1000`, deterministic per worktree name, so
+host ports (`5432 + sha1(name) % 1000`, deterministic per worktree name, so
 teammates on the same worktree name get the same ports). Five worktrees open,
 zero port conflicts, zero flags.
 
@@ -67,4 +68,16 @@ worktree. `sail:info` (or `--json` for agents) is the source of truth, and
 `sail:up` keeps `.env.local` in sync automatically.
 </Callout>
 
-For the full walkthrough see [Getting Started](/docs/sail/getting-started).
+## Where to go next
+
+<Cards>
+  <Card title="Getting Started" href="/docs/sail/getting-started" description="Prerequisites, the first boot, and the everyday loop — start here." />
+  <Card title="Installing & detection" href="/docs/sail/install" description="What sail:install scans, in what order, and every file it writes (all append-only)." />
+  <Card title="Services & compose.yml" href="/docs/sail/services" description="The service catalogue — images, ports, credentials, dashboards, volumes — and how the generated compose file is merged." />
+  <Card title="Worktrees & ports" href="/docs/sail/worktrees" description="Project naming, the deterministic port offset, the .env.local / .env.test.local sync, and pruning orphan stacks." />
+  <Card title="Sharing the app" href="/docs/sail/sharing" description="sail:share — a public cloudflared tunnel for webhook providers and device testing." />
+  <Card title="Varlock" href="/docs/sail/varlock" description="Detection, the managed .env.schema block, @public connection coordinates, and encrypted env files." />
+  <Card title="AI agents" href="/docs/sail/agents" description="JSON by default, no prompts, the AGENTS.md block, and the sail-basics skill." />
+  <Card title="Commands" href="/docs/sail/commands" description="Reference for every sail:* command — args, flags, JSON payloads and exit codes." />
+  <Card title="Troubleshooting" href="/docs/sail/troubleshooting" description="Every failure sail can print, what causes it, and how to get out of it." />
+</Cards>

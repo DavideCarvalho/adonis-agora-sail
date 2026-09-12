@@ -1,0 +1,325 @@
+---
+title: Commands
+description: Complete reference for every sail:* ace command — arguments, flags, printed output, --json payloads, exit codes and the exact failure messages.
+icon: Terminal
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+`node ace add @adonis-agora/sail` registers `@adonis-agora/sail/commands` in `adonisrc.ts`, which exposes thirteen commands: `sail:install`, `sail:up`, `sail:down`, `sail:ps`, `sail:logs`, `sail:info`, `sail:exec`, `sail:prune`, `sail:sync-env`, `sail:psql`, `sail:mysql`, `sail:redis` and `sail:share`. All of them declare `startApp: false` — none boots the application, so they work on a half-configured app.
+
+## Conventions shared by every command
+
+**`--json`** is declared on the shared base command, so it exists everywhere. It defaults to *on* inside an AI coding agent and *off* otherwise; detection is the standard environment check (`CLAUDECODE`, `GEMINI_CLI`, `GITHUB_COPILOT_CLI_MODE`, `WINDSURF_SESSION` / `TERM_PROGRAM=windsurf`, `CODEX_CLI` / `CODEX_SANDBOX`, `OPENCODE`, `CURSOR_AGENT`). Pass `--no-json` to force human output inside an agent.
+
+**Prompts** open only when *both* conditions hold: not inside an AI agent *and* `process.stdin.isTTY`. Under CI, a pipe or an agent, commands never block — they either treat the explicit flag as consent (`sail:down --volumes`) or fail with the exact re-run to use.
+
+**Errors** are JSON-aware. In human mode they print `logger.error(message)` then `logger.info(hint)`; in JSON mode they print one object and nothing else:
+
+```json
+{
+  "error": "No compose file found at /app/compose.yml",
+  "hint": "Run \"node ace sail:install\" first to generate it"
+}
+```
+
+**Two preflights** guard the docker-backed commands. The compose-file check fails with `No compose file found at <path>` / hint `Run "node ace sail:install" first to generate it`. The docker check runs `docker compose version --short` and fails with either `docker is not installed or not on PATH` or `docker compose is not usable: <stderr>`, both hinting `Install Docker (or start the daemon) and try again`. `sail:info`, `sail:sync-env` and `sail:share` need neither; `sail:prune` needs docker but not a compose file.
+
+**Exit codes**: `0` on success, `1` for a sail-level failure (missing compose file, unusable docker, flag conflicts, refusals), and the child's own code whenever a child is what failed — `docker compose` for `sail:up` / `sail:down` / `sail:logs`, the in-container command for `sail:exec`, the client for a one-shot service shell, the attached process for `sail:logs --follow` and the REPLs. Docker's stderr is truncated to its last 8 non-blank lines in the message — the full log is one `sail:logs` away.
+
+Every command targets the compose project of the current worktree (`<app>-<worktree-slug>`), with the worktree's port offset injected as `SAIL_*_PORT` variables. See [Worktrees](/docs/sail/worktrees).
+
+## `sail:install`
+
+```bash
+node ace sail:install [--services=postgres --services=redis] [--json]
+```
+
+Generates or merges `compose.yml`, appends `Env.schema` validations to `start/env.ts`, adds missing `.env` / `.env.example` defaults, upserts the varlock `.env.schema` section and the `AGENTS.md` block. `--services` is an array flag (repeat it, or comma-separate); omitted, sail auto-detects from `package.json` and `config/*.ts`, and prompts with a multi-select only when the scan finds nothing *and* the session is interactive. Unknown names fail with `Unknown service(s): <names>` / `Valid services: postgres, mysql, redis, mailpit, minio`; an empty scan under an agent fails with `Could not detect any service from package.json or config/*.ts` plus the exact `--services=` re-run. Docker is not required. Full walkthrough and JSON payload: [Install](/docs/sail/install).
+
+## `sail:up`
+
+```bash
+node ace sail:up [--pull] [--json]
+```
+
+Runs `docker compose up --detach --wait --remove-orphans` (plus `--pull always` with `--pull`), returning only once every healthcheck passes — `node ace sail:up && node ace migration:run` needs no sleep. Idempotent: re-running on a live stack is a silent success.
+
+| Flag | Alias | Type | Default | Effect |
+| --- | --- | --- | --- | --- |
+| `--pull` | — | boolean | `false` | Appends `--pull always`, refreshing images before start |
+| `--json` | — | boolean | agent-detected | Machine-readable output |
+
+Before touching docker it TCP-probes the stack's host ports. Ports its own running containers already publish are subtracted, so an idempotent re-`up` stays green; anything else is foreign and aborts the start with exit `1` rather than cross-wiring containers onto another worktree's database:
+
+```
+Cannot start: host port(s) already in use: :5621 (held by shop-main-postgres-1), :6568
+```
+
+Hint: ``Stop the other stack (`node ace sail:down` in that worktree), pick a worktree with free ports, or run `node ace sail:prune` for orphans``. Holder names come from `docker ps --format json` and are best-effort — a port held by a non-docker process is reported without a name.
+
+The probe is scoped to the services your `compose.yml` declares, so a system MySQL on `3306` never blocks a postgres-only stack. When the compose file cannot be read there is nothing to probe and the preflight is skipped — `docker compose` then reports the real problem.
+
+On success it syncs `.env.local` and `.env.test.local` — the same sync as [`sail:sync-env`](#sailsync-env) — and prints the `sail:info` summary:
+
+```
+Sail stack "shop-feature-login" is up
+env: .env.local updated, .env.test.local created
+Sail stack "shop-feature-login" — worktree "feature-login" (port offset +189)
+Compose file: /app/compose.yml
+
+SERVICES
+  postgres — PostgreSQL 17 database
+    postgres: localhost:5621 -> 5432
+…
+```
+
+A file that looks like varlock ciphertext is never rewritten; it is reported with `` <file> looks encrypted — ports NOT synced there, use `node ace sail:info --env` `` — a warning here, not a failure.
+
+The `--json` payload is the stack info object plus the sync report:
+
+```json
+{
+  "status": "up",
+  "envSync": {
+    "files": [{ "file": ".env.local", "action": "updated" }],
+    "gitignore": "unchanged"
+  },
+  "appName": "shop",
+  "projectName": "shop-feature-login",
+  "worktree": { "name": "feature-login", "slug": "feature-login", "path": "/app" },
+  "portOffset": 189,
+  "composeFilePath": "/app/compose.yml",
+  "services": [
+    {
+      "name": "postgres",
+      "summary": "PostgreSQL 17 database",
+      "ports": [{ "label": "postgres", "envVar": "SAIL_POSTGRES_PORT", "hostPort": 5621, "containerPort": 5432 }],
+      "dashboards": [],
+      "appEnv": { "DB_HOST": "127.0.0.1", "DB_PORT": "5621", "DB_USER": "sail", "DB_PASSWORD": "password", "DB_DATABASE": "app" }
+    }
+  ],
+  "appEnv": { "DB_HOST": "127.0.0.1", "DB_PORT": "5621", "…": "…" }
+}
+```
+
+`worktree` is `null` in the main checkout, where `portOffset` is `0`. A failing `docker compose up` exits with compose's own code and prints `sail:up failed:\n<last 8 log lines>` with the hint ``Is the Docker daemon running? See `node ace sail:logs` for service output``.
+
+## `sail:down`
+
+```bash
+node ace sail:down [--volumes] [--json]
+```
+
+Runs `docker compose down --remove-orphans` for *this worktree's* project only; other worktrees keep running.
+
+| Flag | Alias | Type | Default | Effect |
+| --- | --- | --- | --- | --- |
+| `--volumes` | `-v` | boolean | `false` | Adds `--volumes`: deletes the named volumes and all local service data |
+| `--json` | — | boolean | agent-detected | Machine-readable output |
+
+With `--volumes` on an interactive TTY the command asks `Delete named volumes? All local service data will be lost`. Declining (or a prompt that throws, e.g. Ctrl+C) prints `Aborted — containers left running, volumes kept.` and exits `0` — nothing is stopped at all, not just the volumes. Under CI or an agent there is no prompt: the explicit flag is the consent.
+
+```json
+{ "status": "down", "projectName": "shop-feature-login", "volumes": true }
+```
+
+Failure: compose's exit code, `sail:down failed:\n<tail>` / `Is the Docker daemon running?`.
+
+## `sail:ps`
+
+```bash
+node ace sail:ps [--json]
+```
+
+`docker compose ps --all --format json` for the current project — stopped containers included. No flags beyond `--json`. Human output is one indented line per container:
+
+```
+  postgres  running (healthy)  5621->5432
+  mailpit  exited
+```
+
+An empty stack prints `No containers for this stack. Run "node ace sail:up" to start it.` and exits `0`. The `--json` payload is a bare array (`[]` when empty); `health` is an empty string when the service declares no healthcheck, and publishers are deduped across IPv4/IPv6:
+
+```json
+[
+  { "name": "postgres", "state": "running", "health": "healthy",
+    "publishers": [{ "hostPort": 5621, "containerPort": 5432 }] }
+]
+```
+
+A parse or daemon failure exits `1` with `Could not list containers: docker compose ps failed: <stderr>` / `Is the Docker daemon running?`.
+
+## `sail:info`
+
+```bash
+node ace sail:info [--env] [--json]
+```
+
+The command to use instead of hardcoding ports. It reads the compose file for the enabled services and falls back to the config scan when there is no compose file yet, so it also previews what `sail:install` would create. Pure filesystem: no docker, no running stack required.
+
+| Flag | Alias | Type | Default | Effect |
+| --- | --- | --- | --- | --- |
+| `--env` | — | boolean | `false` | Prints only sorted `KEY=value` lines, for `eval $(node ace sail:info --env)` |
+| `--json` | — | boolean | agent-detected | Prints the stack object plus `scan` and `varlock` |
+
+`--env` is checked first and wins over `--json` — `sail:info --env` prints plain `KEY=value` lines even inside an agent. Human output is the stack summary, the config scan, and a closing hint that is either ``varlock detected — boot with `varlock run -- node ace serve --hmr` `` or `.env.local is synced by sail:up / sail:sync-env — just boot the app`.
+
+The JSON payload is the same stack object `sail:up` returns, plus:
+
+```json
+{
+  "…": "…",
+  "scan": {
+    "services": ["postgres"],
+    "evidence": [{ "service": "postgres", "via": "dependency", "detail": "pg" }],
+    "declaredEnvKeys": [], "usedEnvKeys": [], "missingEnvKeys": [],
+    "dbClient": "pg", "agora": [], "notes": []
+  },
+  "varlock": { "inUse": false, "schemaPath": null, "via": null }
+}
+```
+
+With nothing enabled and nothing detected it exits `1` with `No sail services enabled for this app` / `Run "node ace sail:install" first to generate compose.yml`.
+
+## `sail:logs`
+
+```bash
+node ace sail:logs [service] [--tail 100] [--since 10m] [--follow] [--json]
+```
+
+`docker compose logs --no-color` for the whole stack, or for one service when the positional argument is given.
+
+| Arg / Flag | Alias | Type | Default | Effect |
+| --- | --- | --- | --- | --- |
+| `service` | — | string arg | all services | Limits output to one compose service |
+| `--tail` | — | string | `'100'` | Lines from the end of the log |
+| `--since` | — | string | unset | Passed through to compose (`10m`, `2026-09-07T00:00:00`) |
+| `--follow` | `-f` | boolean | `false` | Streams with inherited stdio until interrupted |
+| `--json` | — | boolean | agent-detected | Wraps the captured output |
+
+`--follow` and JSON output are mutually exclusive — an endless JSON stream helps nobody. The combination exits `1` with `Cannot combine --follow with --json output`, hinting ``Stream text with `node ace sail:logs --follow`, or poll once with `node ace sail:logs --tail 100 --json` ``. Since `--json` is implicit under an agent, `sail:logs --follow` fails there unless you pass `--no-json`; agents should poll with `--tail` / `--since` instead. In follow mode output goes straight to the terminal and only the child's exit code is propagated.
+
+```json
+{ "service": "postgres", "logs": "postgres-1  | …\n" }
+```
+
+`service` is `null` when the argument is omitted. Failures propagate compose's exit code with `Could not read logs:\n<tail>` / ``Is the Docker daemon running? Check the service name with `node ace sail:ps` ``.
+
+## `sail:exec`
+
+```bash
+node ace sail:exec <service> -- <command...>
+```
+
+Runs a one-shot `docker compose exec -T <service> <command...>` and prints the captured stdout. Deliberately non-interactive: no TTY is allocated, so it is safe from scripts and agents. Use `--` so ace hands the rest of the line to the spread argument.
+
+```bash
+node ace sail:exec redis -- redis-cli ping
+node ace sail:exec postgres -- psql -U sail -d app -c "select 1"
+```
+
+A missing command exits `1` before any docker call, with `No command given` / `Usage: node ace sail:exec <service> -- <command...> (e.g. node ace sail:exec redis -- redis-cli ping)`. A non-zero exit from the container propagates its code and prints `sail:exec failed (exit N):\n<tail>` / ``Check the service name with `node ace sail:ps` ``.
+
+<Callout type="info">
+`sail:exec` has no JSON success payload: stdout is relayed verbatim even under `--json`, and only the *failure* is a JSON object (printed after the raw stdout). For structured one-shots against a database, prefer `sail:psql` / `sail:mysql` / `sail:redis`, which wrap the output.
+</Callout>
+
+## `sail:psql`, `sail:mysql`, `sail:redis`
+
+```bash
+node ace sail:psql  [-- <psql args>]
+node ace sail:mysql [-- <mysql args>]
+node ace sail:redis [-- <redis-cli args>]
+```
+
+The three service shells share one implementation and one shape: with no extra arguments they open the client's REPL attached to your terminal; with arguments they run a captured one-shot and exit with the client's own code. They always execute *inside* the container, so worktree port offsets are irrelevant here.
+
+| Command | Service | Client argv | One-shot example |
+| --- | --- | --- | --- |
+| `sail:psql` | `postgres` | `psql -U sail -d app <args>` | `node ace sail:psql -- -c 'select 1'` |
+| `sail:mysql` | `mysql` | `mysql -usail -ppassword app <args>` | `node ace sail:mysql -- -e 'show tables'` |
+| `sail:redis` | `redis` | `redis-cli <args>` | `node ace sail:redis -- ping` |
+
+If the service is not in the compose file the command exits `1` with `The <service> service is not enabled` / `Run "node ace sail:install --services=<service>" first`.
+
+The REPL path is refused twice over. With JSON output on (explicit `--json`, or an agent) it exits `1` with `Cannot open an interactive <service> shell with --json output`, hinting `<one-shot example with --json before the `--`>`. Without a TTY it exits `1` with `No interactive terminal — cannot open a <service> shell` and the same example as hint. A REPL that exits non-zero just propagates its code, with no extra message.
+
+One-shots print the trimmed stdout in human mode, and this object under `--json`:
+
+```json
+{ "service": "postgres", "command": ["psql", "-U", "sail", "-d", "app", "-c", "select 1"], "output": "…" }
+```
+
+A failing one-shot exits with the client's code and prints `sail:psql failed (exit N):\n<tail>` / ``Check the service is up with `node ace sail:ps` ``. A SQL error therefore fails the ace command with the status `psql` returned.
+
+## `sail:sync-env`
+
+```bash
+node ace sail:sync-env [--json]
+```
+
+Writes the worktree's resolved ports into the `# sail:start` / `# sail:end` block of `.env.local` **and** `.env.test.local` (the file the Adonis loader reads under `NODE_ENV=test`), creating both when missing and adding them to `.gitignore`. Everything outside the markers is preserved. No docker, no flags beyond `--json`: safe to run at any time, a no-op when nothing changed, and the retry-safe primitive `sail:up` calls internally.
+
+Files that look like varlock ciphertext are skipped, not corrupted — and that skip sets the **exit code to `1`**, with the warning `` <file> looks encrypted — ports NOT synced there, set them from `node ace sail:info --env` through your secret manager instead ``. See [varlock](/docs/sail/varlock).
+
+```json
+{
+  "status": "synced",
+  "files": [
+    { "file": ".env.local", "action": "updated" },
+    { "file": ".env.test.local", "action": "unchanged" }
+  ],
+  "gitignore": "updated",
+  "keys": ["DB_DATABASE", "DB_HOST", "DB_PASSWORD", "DB_PORT", "DB_USER"],
+  "varlock": { "inUse": false, "schemaPath": null, "via": null }
+}
+```
+
+`action` is one of `created`, `updated`, `unchanged`, `skipped-encrypted`; `gitignore` is `updated` or `unchanged`. With no services enabled it exits `1` with `No sail services enabled for this app`.
+
+## `sail:prune`
+
+```bash
+node ace sail:prune [--dry-run] [--volumes] [--json]
+```
+
+Deleting a worktree without running `sail:down` leaves its containers behind. `sail:prune` lists every compose project on the daemon (`docker compose ls --format json`, both the array and the NDJSON shape) and stops the ones that belong to this app and whose compose file is gone.
+
+| Flag | Alias | Type | Default | Effect |
+| --- | --- | --- | --- | --- |
+| `--dry-run` | — | boolean | `false` | Only lists the orphans |
+| `--volumes` | — | boolean | `false` | Also deletes the orphan stacks' volumes (their data) |
+| `--json` | — | boolean | agent-detected | Machine-readable output |
+
+A project counts as an orphan only when its name is `<app>` or starts with `<app>-`, *and* it reports at least one config file, *and* none of those files exist on disk. Projects with no reported config files, and other apps' projects, are never touched. There is no confirmation prompt — `--dry-run` is the safe look. Each orphan is stopped with a global (file-less) `docker compose --project-name <name> down --remove-orphans`.
+
+The payload varies with the outcome; `failed` appears only on the real run:
+
+```json
+{ "orphans": [], "removed": [] }
+{ "orphans": ["shop-old-branch"], "removed": [] }
+{ "orphans": ["shop-old-branch"], "removed": ["shop-old-branch"], "failed": [] }
+```
+
+Human output is `No orphan sail stacks — everything running belongs to a live worktree.`, or the indented list under `Orphan sail stacks (re-run without --dry-run to stop them):`, or `Stopped orphan stack(s): <names>`. Any stack that fails to stop is reported as `Could not stop "<name>":\n<tail>` and sets the exit code to `1`. A listing failure exits `1` with `Could not list compose projects: docker compose ls failed: <stderr>` / `Is the Docker daemon running?`.
+
+## `sail:share`
+
+```bash
+node ace sail:share [--port 3333] [--json]
+```
+
+Exposes the locally running app on a `https://<label>.trycloudflare.com` URL through a cloudflared quick tunnel — for previews and, mainly, provider webhooks calling back into your machine. `--port` (alias `-p`, a number flag) overrides the target; by default sail resolves the worktree's `serve` port from the dot-env loader chain plus the worktree offset. The command stays attached until interrupted; with `--json` it prints `{ url, local, port, basePort, portOffset, resolvedFrom }` on stdout once the tunnel registers, keeps cloudflared's logs on stderr, and keeps running. A missing binary exits `1` with ``cloudflared is not installed or not on PATH. Install cloudflared (`brew install cloudflare/cloudflare/cloudflared`, or `npm i -D cloudflared`) and re-run``; no URL within 60s exits `1` with `cloudflared did not print a tunnel URL in time`. Port resolution and the warning shapes: [Sharing](/docs/sail/sharing).
+
+## Under an AI agent
+
+Everything above collapses into a short contract, which is also what `sail:install` writes into `AGENTS.md` — see [Agents](/docs/sail/agents):
+
+- output is JSON by default; `--no-json` restores human text;
+- no command prompts, and none hang waiting for input;
+- `sail:up`, `sail:down`, `sail:sync-env` and `sail:prune` are idempotent and safe to retry;
+- interactive paths (`sail:psql` with no args, `sail:logs --follow`) fail fast with the exact non-interactive re-run in the `hint` field;
+- a failing query fails the command with the inner exit code, `sail:exec` and the service shells alike.
+
+If something does not behave as documented here, start with [Troubleshooting](/docs/sail/troubleshooting).

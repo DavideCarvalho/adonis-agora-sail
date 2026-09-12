@@ -1,0 +1,280 @@
+---
+title: Agents
+description: How sail behaves inside an AI coding agent — automatic JSON output, no prompts, idempotent commands with actionable failures, the managed AGENTS.md section and the shipped sail-basics skill.
+icon: Bot
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+An agent drives sail blind: no terminal to read, no prompt to answer, no
+spinner to watch. So every command detects the agent it runs under and
+switches to a machine contract — JSON on stdout, no prompts, and failures
+that name the exact command to re-run.
+
+## What counts as an agent
+
+Detection is `isRunningInAIAgent()` from `@poppinss/utils`, called from the
+shared `SailBaseCommand`. It is purely environment-based — no heuristics, no
+config — and returns true when any of these are set:
+
+| Signal | Agent |
+| --- | --- |
+| `CLAUDECODE=1` | Claude Code |
+| `GEMINI_CLI=1` | Gemini CLI |
+| `GITHUB_COPILOT_CLI_MODE=1` | GitHub Copilot CLI |
+| `WINDSURF_SESSION=1` or `TERM_PROGRAM=windsurf` | Windsurf |
+| `CODEX_CLI=1` or `CODEX_SANDBOX=1` | Codex |
+| `OPENCODE=1` | OpenCode |
+| `CURSOR_AGENT=1` | Cursor |
+
+Every variable must equal the string `"1"` — `true`, `yes` or an empty value
+do not count. `TERM_PROGRAM` is the one exception: it is compared against
+`windsurf`. The first match in the order above wins, and
+`isRunningInAIAgent()` is just "some agent matched".
+
+Two derived booleans drive everything else:
+
+```ts
+get wantsJson(): boolean {
+  return this.json ?? isRunningInAIAgent()
+}
+
+get canPrompt(): boolean {
+  return !isRunningInAIAgent() && process.stdin.isTTY === true
+}
+```
+
+`--json` is a nullable flag: unset it is `undefined`, so the agent default
+applies; pass it explicitly and your value wins either way. Ace parses with
+yargs' boolean negation, so `--no-json` forces human output *inside* an
+agent, and `--json` forces JSON outside one.
+
+<Callout type="info">
+The two conditions are deliberately different. Prompting additionally
+requires a TTY on stdin, so a CI job (no agent env var, no TTY) behaves like
+an agent for prompts — it never hangs waiting for input — while still
+printing human text unless you pass `--json`.
+</Callout>
+
+## What changes in agent mode
+
+- **`--json` is the default.** Every command with a JSON shape prints it
+  instead of prose: `sail:install`, `sail:up`, `sail:down`, `sail:ps`,
+  `sail:info`, `sail:logs`, `sail:sync-env`, `sail:prune`, `sail:share` and
+  the one-shot service shells.
+- **No prompts, ever.** `sail:install` normally offers a multi-select when it
+  detects nothing; under an agent it fails instead, printing the exact
+  `--services=` flags to re-run with.
+- **Confirmation flags are their own consent.** `sail:down --volumes`
+  destroys the stack's data, so it asks to confirm in an interactive
+  terminal; under an agent (or CI, or a pipe) the explicit flag *is* the
+  confirmation and the command proceeds instead of stalling.
+- **No ANSI, no spinners.** Sail renders no spinners or progress animations,
+  and its human formatter emits plain text on purpose (the CLI UI also drops
+  colour when stdout is not a colour-capable terminal) — nothing to strip
+  before parsing.
+- **Streaming and REPLs are refused, not degraded.** `sail:logs --follow`
+  with JSON fails, pointing at `sail:logs --tail 100 --json`; a bare
+  `sail:psql` / `sail:mysql` / `sail:redis` fails under `--json` or without a
+  TTY, pointing at the one-shot form. No command ever blocks forever waiting
+  on a terminal.
+
+Per-flag detail for each command lives in [/docs/sail/commands](/docs/sail/commands).
+
+## The contract an agent can rely on
+
+### stdout is one JSON document
+
+In JSON mode a command writes exactly one pretty-printed
+(`JSON.stringify(payload, null, 2)`) object to stdout and nothing else.
+Failures use the same channel:
+
+```json
+{
+  "error": "No compose file found at /app/compose.yml",
+  "hint": "Run \"node ace sail:install\" first to generate it"
+}
+```
+
+So an agent parses stdout unconditionally and branches on the `error` key —
+there is no second format to handle. In *human* mode the split is the usual
+one: `logger.error` / `logger.fatal` go to stderr, while success, info and
+warning lines go to stdout.
+
+`sail:exec` is the deliberate exception: it is a passthrough, so the
+container command's captured stdout is printed verbatim (a JSON `error`
+object is appended only when it fails). Use the one-shot shells when you want
+the output wrapped in JSON instead.
+
+<Callout type="info">
+`sail:share --json` holds to the same contract: one object
+(`{ url, local, port, basePort, portOffset, resolvedFrom }`, plus `notice` or
+`warning` when the port resolution needed explaining) printed once the tunnel
+registers. The process then stays alive until you kill it, with cloudflared's
+own logs forwarded to stderr so stdout stays clean.
+</Callout>
+
+### Exit codes
+
+`0` means success, including no-ops (nothing to prune, ports already in sync,
+compose file already up to date). Any failure path sets a non-zero code
+*before* printing, so `&&` chaining is safe:
+`node ace sail:up && node ace migration:run` only migrates once the
+healthchecks passed.
+
+Sail-level failures (missing compose file, unusable docker, flag conflicts,
+refusals) exit `1`. When a child process is what failed, its own code comes
+back: `sail:exec` returns the container command's status, the one-shot shells
+return the client's (`sail:psql failed (exit 3): …` exits `3`), and `sail:up`
+/ `sail:down` / `sail:logs` return `docker compose`'s. So a failing query
+fails your script with the status the query produced.
+
+### Idempotency
+
+Every state-changing command is safe to retry:
+
+| Command | Re-run behaviour |
+| --- | --- |
+| `sail:install` | Append-only: merges missing services into an existing `compose.yml`, adds only absent env keys and validations, replaces its `AGENTS.md` section in place. Hand edits survive; the report says `already up to date` / `unchanged`. |
+| `sail:up` | Silent success on a live stack — the pre-flight port check subtracts the ports your own containers publish, so only a *foreign* holder fails it. |
+| `sail:down` | Stopping an already-stopped stack succeeds; only this worktree's compose project is touched. |
+| `sail:sync-env` | Pure file sync, no Docker. Everything outside the `# sail:start` / `# sail:end` markers is preserved. |
+| `sail:prune` | Only stops projects whose compose file is gone from disk; other apps' projects are never candidates. `--dry-run` is read-only. |
+| `sail:ps` / `sail:info` / `sail:logs` | Read-only. `sail:info` even works before install, falling back to the app scan to preview what install would create. |
+
+<Callout type="warn">
+`sail:sync-env` skips an encrypted `.env.local` instead of corrupting it. In
+JSON mode that is reported as a file whose `action` is `skipped-encrypted`
+while the command still exits `0` — check the `files` array rather than the
+exit code alone.
+</Callout>
+
+### Failures name the re-run
+
+Sail's error hints are commands, not advice. The pattern is consistent:
+
+```json
+{
+  "error": "Could not detect any service from package.json or config/*.ts",
+  "hint": "Re-run with explicit services, e.g. node ace sail:install --services=postgres --services=redis (valid: postgres, mysql, redis, mailpit, minio)"
+}
+```
+
+Other examples: a missing compose file points at `sail:install`; a port
+conflict names the containers holding each port and suggests `sail:down` in
+the other worktree or `sail:prune`; a disabled service points at
+`sail:install --services=<name>`; a bare REPL request points at the one-shot
+form. An agent can usually recover by executing the `hint` verbatim.
+
+## The managed `AGENTS.md` section
+
+`sail:install` writes (or refreshes) a section in the app's `AGENTS.md`,
+delimited by `<!-- sail:start -->` and `<!-- sail:end -->`:
+
+```md
+<!-- sail:start -->
+## Sail (local dev services)
+
+- Start services with `node ace sail:up` (idempotent, waits for healthchecks); stop with `node ace sail:down`.
+- Each git worktree gets isolated containers and shifted host ports. Never hardcode ports: run `node ace sail:info --json` for the actual ports, dashboards and connection env.
+- Status and logs: `node ace sail:ps --json`, `node ace sail:logs --tail 100`.
+<!-- sail:end -->
+```
+
+The content is deliberately generic — no worktree names, no concrete port
+numbers. `AGENTS.md` is committed and shared across machines and worktrees
+while ports shift per worktree, so the section teaches the *lookup* instead
+of the values. A unit test asserts the section contains no 4–5 digit number.
+
+Update rules:
+
+- No file, or an empty one: sail creates it containing just the section.
+- File without the markers: the section is appended at the end, your content
+  untouched.
+- Markers present: only the text between them is replaced — everything before
+  and after is preserved, and a re-run with no changes rewrites nothing
+  (install reports `unchanged`).
+- Markers removed: sail can no longer find its section and appends a fresh
+  one on the next install, leaving your edited copy in place. To own the
+  wording permanently, move your version outside the markers.
+
+## The `sail-basics` skill
+
+Sail ships an agent skill in the package itself:
+
+- **Source:** `packages/core/skills/sail-basics/SKILL.md` in this repo.
+- **Distribution:** the package's `files` array includes `skills`, so after
+  installation it lives at
+  `node_modules/@adonis-agora/sail/skills/sail-basics/SKILL.md`. Nothing
+  copies it into your project — point your agent at that path, or symlink it
+  into your harness's skills directory (for example
+  `.claude/skills/sail-basics`).
+- **Format:** [intent](https://github.com/TanStack/intent)-compatible
+  frontmatter (`name`, `description`, `metadata.library`,
+  `metadata.library_version`, `sources`). CI validates it: the `Check Skills`
+  workflow runs `intent validate` on PRs touching `skills/**`, and after a
+  release `intent stale` opens a review PR when the skill has drifted from
+  the library.
+
+What it teaches, in one line each:
+
+- Ask sail for ports (`sail:info --json`): host ports are `base + worktree
+  offset`, so `5432` is only correct in the main checkout.
+- `sail:up` waits for healthchecks — `sail:up && migration:run` needs no
+  sleeps — and it syncs the worktree's ports into `.env.local` (plus
+  `.env.test.local`), which Adonis loads over `.env` on its own. Sync before
+  migrating; no `eval` in the normal flow.
+- Poll logs with `--tail` / `--since`, never `--follow` (which refuses JSON).
+- Use one-shot shells (`sail:psql -- -c '…'`), never the REPL: they run over
+  the container network, so port offsets do not matter.
+- Under [varlock](/docs/sail/varlock), read `.env.schema` for shape (no
+  secrets) and `sail:info --json` for live values.
+
+## Recipes for agents
+
+Boot a stack from scratch, non-interactively:
+
+```bash
+node ace sail:install --services=postgres --services=redis
+node ace sail:up && node ace migration:run
+```
+
+Read the live ports, connection env and container state:
+
+```bash
+node ace sail:info --json | jq '.appEnv'
+node ace sail:info --json | jq '.services[] | {name, ports}'
+node ace sail:ps --json | jq '.[] | {name, state, health}'
+```
+
+Run a query or a command (put `--json` *before* `--`; everything after it
+goes to the client):
+
+```bash
+node ace sail:psql --json -- -c 'select count(*) from users'
+node ace sail:mysql --json -- -e 'show tables'
+node ace sail:redis --json -- ping
+node ace sail:exec redis -- redis-cli ping   # exit code propagates
+```
+
+Read recent logs without streaming, and re-sync ports after switching
+worktrees (no containers touched):
+
+```bash
+node ace sail:logs --tail 200 --json
+node ace sail:logs postgres --since 5m --json | jq -r '.logs'
+node ace sail:sync-env --json | jq '.files'
+```
+
+Tear down:
+
+```bash
+node ace sail:down --json              # stop this worktree's stack
+node ace sail:down --volumes --json    # flag is its own confirmation
+node ace sail:prune --dry-run --json   # orphans from deleted worktrees
+```
+
+See [/docs/sail/worktrees](/docs/sail/worktrees) for how the offsets are
+computed, [/docs/sail/commands](/docs/sail/commands) for every flag, and
+[/docs/sail/troubleshooting](/docs/sail/troubleshooting) when a hint is not
+enough.
