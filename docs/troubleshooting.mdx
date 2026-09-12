@@ -22,7 +22,7 @@ docker compose is not usable: <docker's stderr>
 ```
 
 Hint: `Install Docker (or start the daemon) and try again`. Both come from the
-`ensureDocker` preflight every stack command runs. The first means spawning
+docker preflight every stack command runs before it does anything else. The first means spawning
 `docker` threw `ENOENT` — fix `PATH` for the shell running `node ace`. The
 second means `docker compose version --short` ran and exited non-zero: the
 daemon is down, or the **compose v2 plugin** is missing. Sail always shells out
@@ -257,9 +257,9 @@ could not edit start/env.ts — add by hand: …
 could not edit .env — add by hand: …
 ```
 
-Env wiring never blocks the compose file. When `createCodemods()` or an
-individual codemod throws (an unparseable `start/env.ts`, a read-only file),
-`sail:install` degrades to printing the exact snippet to paste — the compose
+Env wiring never blocks the compose file. When an edit cannot be made — an
+unparseable `start/env.ts`, a read-only file — `sail:install` degrades to
+printing the exact snippet to paste — the compose
 file and the rest of the install already succeeded.
 
 ### MinIO needs one manual step

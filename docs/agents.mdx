@@ -13,9 +13,8 @@ that name the exact command to re-run.
 
 ## What counts as an agent
 
-Detection is `isRunningInAIAgent()` from `@poppinss/utils`, called from the
-shared `SailBaseCommand`. It is purely environment-based — no heuristics, no
-config — and returns true when any of these are set:
+Detection is purely environment-based — no heuristics, no config. Sail
+considers itself inside an agent when any of these variables is set:
 
 | Signal | Agent |
 | --- | --- |
@@ -29,31 +28,24 @@ config — and returns true when any of these are set:
 
 Every variable must equal the string `"1"` — `true`, `yes` or an empty value
 do not count. `TERM_PROGRAM` is the one exception: it is compared against
-`windsurf`. The first match in the order above wins, and
-`isRunningInAIAgent()` is just "some agent matched".
+`windsurf`.
 
-Two derived booleans drive everything else:
+Two things follow from that, and they follow different rules:
 
-```ts
-get wantsJson(): boolean {
-  return this.json ?? isRunningInAIAgent()
-}
+| | JSON output | Interactive prompts |
+| --- | --- | --- |
+| Inside an agent | on by default | never |
+| Plain terminal | off by default | yes |
+| CI, or output piped | off by default | never |
 
-get canPrompt(): boolean {
-  return !isRunningInAIAgent() && process.stdin.isTTY === true
-}
-```
-
-`--json` is a nullable flag: unset it is `undefined`, so the agent default
-applies; pass it explicitly and your value wins either way. Ace parses with
-yargs' boolean negation, so `--no-json` forces human output *inside* an
-agent, and `--json` forces JSON outside one.
+An explicit flag always wins: `--json` forces JSON outside an agent, and
+`--no-json` forces human text inside one.
 
 <Callout type="info">
-The two conditions are deliberately different. Prompting additionally
-requires a TTY on stdin, so a CI job (no agent env var, no TTY) behaves like
-an agent for prompts — it never hangs waiting for input — while still
-printing human text unless you pass `--json`.
+The two rules are deliberately different. Prompting also needs a terminal on
+stdin, so a CI job — no agent variable, no TTY — behaves like an agent for
+prompts and never hangs waiting for input, while still printing human text
+unless you ask for `--json`.
 </Callout>
 
 ## What changes in agent mode

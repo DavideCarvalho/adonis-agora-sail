@@ -7,18 +7,10 @@ icon: GitBranch
 import { Callout } from 'fumadocs-ui/components/callout';
 
 Sail is worktree-native: no flags, no per-worktree compose overrides. Every
-command first resolves a context — which worktree the app root lives in, which
-compose project to target, which port offset to apply:
-
-```ts
-interface SailContext {
-  appName: string          // package.json name, sanitized
-  projectName: string      // appName, or `appName-<worktree slug>`
-  worktree: GitWorktree | null
-  portOffset: number       // 0 in the main checkout
-  composeFilePath: string  // <appRoot>/compose.yml
-}
-```
+command starts by answering three questions about where it was run — which
+worktree the app root lives in, which compose project that maps to, and which
+port offset to apply. `node ace sail:info` prints those answers (`projectName`,
+`worktree`, `portOffset`), and `--json` gives them to you as fields.
 
 ## The compose project name
 
@@ -55,18 +47,10 @@ a port offset; avoid that pair.
 
 ## The port offset
 
-```ts
-export const PORT_RANGE = 1000
-
-export function computeWorktreePortOffset(worktreeName: string): number {
-  const hash = createHash('sha1').update(worktreeName).digest()
-  return hash.readUInt32BE(0) % PORT_RANGE
-}
-```
-
-The first four bytes of the SHA-1 digest of the worktree name, read as a
-big-endian `uint32`, modulo 1000. Every host port the stack publishes is
-`basePort + offset`:
+The offset is the SHA-1 of the worktree's name, reduced to a number between
+`0` and `999`. That range is the same one `@adonisjs/core` uses for the
+worktree-aware `serve` port, so the app and its services shift together. Every
+host port the stack publishes is `basePort + offset`:
 
 | service | env var | base | `feature-login` (+403) |
 | --- | --- | --- | --- |
@@ -113,12 +97,12 @@ different offset.
 
 ## Detection and the git requirement
 
-Detection is `getGitWorktree()` from `@poppinss/utils`, which runs
-`git worktree list --porcelain -z`, resolves the real path of every listed
-worktree, picks the longest one containing the app root, and returns `null` when
-that is the **first** entry (the main worktree) or when the app root is outside
-a git repository. The offset keys on `name` verbatim — case-sensitive, spaces
-included.
+Sail asks git (`git worktree list --porcelain -z`) which worktree the app root
+belongs to, resolving symlinks on the way, and treats two cases as "no
+worktree": the repository's main checkout, and an app root outside a git
+repository at all. The worktree name is matched verbatim — case-sensitive,
+spaces included — so `Feature-Login` and `feature-login` are two different
+worktrees as far as the offset is concerned.
 
 <Callout type="warn">
 The `-z` flag requires **git ≥ 2.36**. On older git the child process exits

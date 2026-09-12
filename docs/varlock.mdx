@@ -27,15 +27,14 @@ who added the package but have not written a schema yet — sail will create one
 else counts: no lockfile scan, no `varlock.config`, no env var. Both reads are failure-tolerant; an
 unreadable `package.json` or a missing schema simply means "not detected", never a crash.
 
-```ts
-import { detectVarlock } from '@adonis-agora/sail'
+`sail:info --json` and `sail:sync-env --json` report what was found under a `varlock` key:
 
-const detection = await detectVarlock(app.appRoot)
-// { inUse: true, via: 'schema', schemaPath: '/app/.env.schema' }
+```json
+{ "varlock": { "inUse": true, "via": "schema", "schemaPath": "/app/.env.schema" } }
 ```
 
-`sail:info --json` and `sail:sync-env --json` carry the whole `VarlockDetection` object in their
-payload — that is how agents decide whether to prefix commands with `varlock run --`.
+That is how an agent decides whether to prefix commands with `varlock run --`. In human output the
+same conclusion shows up as a one-line hint at the bottom of `sail:info`.
 
 What changes when `inUse` is true:
 
@@ -328,7 +327,7 @@ a value, keep the item and change it — your value is preserved.
 **Ports in `.env.local` look stale.** Run `node ace sail:sync-env`: no containers involved, safe any
 time, and comparable against `node ace sail:info --env`.
 
-**You don't use varlock.** Then nothing above applies: `detectVarlock` returns `inUse: false`,
+**You don't use varlock.** Then nothing above applies: detection comes back negative,
 `sail:install` reports `varlock schema skipped (no varlock detected)` and no `.env.schema` is ever
 created. The port sync still runs — `.env.local` and `.env.test.local` are plain dotenv files Adonis
 loads on its own, no `eval`, no wrapper command. Adopting varlock later is one `sail:install` away;
