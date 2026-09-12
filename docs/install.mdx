@@ -13,10 +13,9 @@ node ace add @adonis-agora/sail   # registers the commands in adonisrc.ts
 node ace sail:install             # scans the app and writes the wiring
 ```
 
-**`add`** runs the package's `configure` hook, whose entire job is one codemod:
-`rcFile.addCommand('@adonis-agora/sail/commands')`. That line in `adonisrc.ts`
-is what makes `sail:install`, `sail:up`, `sail:info` and the rest show up in
-`node ace list`. **No provider is registered and no config file is written** —
+**`add`** makes exactly one edit: it appends `@adonis-agora/sail/commands` to
+the `commands` array in `adonisrc.ts`. That line is what makes `sail:install`,
+`sail:up`, `sail:info` and the rest show up in `node ace list`. **No provider is registered and no config file is written** —
 sail is dev tooling, never boots with the app, has no runtime surface and no
 container bindings. It belongs in `devDependencies`.
 
@@ -51,8 +50,8 @@ Selection is resolved in strict precedence order:
 
 ### 1. `package.json` dependencies
 
-`dependencies` and `devDependencies` are merged and matched against each
-service's `detectedBy` list:
+`dependencies` and `devDependencies` are merged and matched against this
+table:
 
 | Dependency | Service |
 | --- | --- |
@@ -159,8 +158,8 @@ is identical in every worktree and on every machine — see
 ### `start/env.ts`
 
 Keys that a selected service needs, that the file does not declare yet, and
-that have a stock first-party shape go through the `defineEnvValidations`
-codemod under the comment `Variables for @adonis-agora/sail local services`:
+that have a stock first-party shape are appended under the comment
+`Variables for @adonis-agora/sail local services`:
 
 | Keys | Validation |
 | --- | --- |
@@ -177,9 +176,9 @@ coverage line: keys declared, keys the configs use, keys missing.
 
 ### `.env` and `.env.example`
 
-Main-checkout defaults (base ports, offset 0) are added via `defineEnvVariables`
-for keys **missing from both files** — the codemod's `add` replaces in place, so
-handing it an existing key would clobber a tuned value. `DB_PASSWORD`,
+Main-checkout defaults (base ports, offset 0) are added only for keys
+**missing from both files**: a key you already set is never rewritten, so a
+tuned value survives every re-run. `DB_PASSWORD`,
 `AWS_SECRET_ACCESS_KEY` and `REDIS_PASSWORD` are written to `.env` but omitted
 from the committed `.env.example`.
 

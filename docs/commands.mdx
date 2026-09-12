@@ -6,15 +6,15 @@ icon: Terminal
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-`node ace add @adonis-agora/sail` registers `@adonis-agora/sail/commands` in `adonisrc.ts`, which exposes thirteen commands: `sail:install`, `sail:up`, `sail:down`, `sail:ps`, `sail:logs`, `sail:info`, `sail:exec`, `sail:prune`, `sail:sync-env`, `sail:psql`, `sail:mysql`, `sail:redis` and `sail:share`. All of them declare `startApp: false` — none boots the application, so they work on a half-configured app.
+`node ace add @adonis-agora/sail` registers `@adonis-agora/sail/commands` in `adonisrc.ts`, which exposes thirteen commands: `sail:install`, `sail:up`, `sail:down`, `sail:ps`, `sail:logs`, `sail:info`, `sail:exec`, `sail:prune`, `sail:sync-env`, `sail:psql`, `sail:mysql`, `sail:redis` and `sail:share`. None of them boots the application, so they work on a half-configured app.
 
 ## Conventions shared by every command
 
-**`--json`** is declared on the shared base command, so it exists everywhere. It defaults to *on* inside an AI coding agent and *off* otherwise; detection is the standard environment check (`CLAUDECODE`, `GEMINI_CLI`, `GITHUB_COPILOT_CLI_MODE`, `WINDSURF_SESSION` / `TERM_PROGRAM=windsurf`, `CODEX_CLI` / `CODEX_SANDBOX`, `OPENCODE`, `CURSOR_AGENT`). Pass `--no-json` to force human output inside an agent.
+**`--json`** exists on every command. It defaults to *on* inside an AI coding agent and *off* otherwise; detection is the standard environment check (`CLAUDECODE`, `GEMINI_CLI`, `GITHUB_COPILOT_CLI_MODE`, `WINDSURF_SESSION` / `TERM_PROGRAM=windsurf`, `CODEX_CLI` / `CODEX_SANDBOX`, `OPENCODE`, `CURSOR_AGENT`). Pass `--no-json` to force human output inside an agent.
 
-**Prompts** open only when *both* conditions hold: not inside an AI agent *and* `process.stdin.isTTY`. Under CI, a pipe or an agent, commands never block — they either treat the explicit flag as consent (`sail:down --volumes`) or fail with the exact re-run to use.
+**Prompts** open only on a real terminal, and never inside an AI agent. Under CI, behind a pipe or inside an agent, commands never block — they either treat the explicit flag as consent (`sail:down --volumes`) or fail with the exact re-run to use.
 
-**Errors** are JSON-aware. In human mode they print `logger.error(message)` then `logger.info(hint)`; in JSON mode they print one object and nothing else:
+**Errors** are JSON-aware. In human mode you get the message followed by the hint; in JSON mode one object and nothing else:
 
 ```json
 {
@@ -259,7 +259,7 @@ A failing one-shot exits with the client's code and prints `sail:psql failed (ex
 node ace sail:sync-env [--json]
 ```
 
-Writes the worktree's resolved ports into the `# sail:start` / `# sail:end` block of `.env.local` **and** `.env.test.local` (the file the Adonis loader reads under `NODE_ENV=test`), creating both when missing and adding them to `.gitignore`. Everything outside the markers is preserved. No docker, no flags beyond `--json`: safe to run at any time, a no-op when nothing changed, and the retry-safe primitive `sail:up` calls internally.
+Writes the worktree's resolved ports into the `# sail:start` / `# sail:end` block of `.env.local` **and** `.env.test.local` (the file the Adonis loader reads under `NODE_ENV=test`), creating both when missing and adding them to `.gitignore`. Everything outside the markers is preserved. No docker, no flags beyond `--json`: safe to run at any time, a no-op when nothing changed, and exactly the sync `sail:up` performs on success.
 
 Files that look like varlock ciphertext are skipped, not corrupted — and that skip sets the **exit code to `1`**, with the warning `` <file> looks encrypted — ports NOT synced there, set them from `node ace sail:info --env` through your secret manager instead ``. See [varlock](/docs/sail/varlock).
 
