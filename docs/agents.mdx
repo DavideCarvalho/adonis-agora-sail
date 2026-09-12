@@ -143,10 +143,11 @@ Every state-changing command is safe to retry:
 | `sail:ps` / `sail:info` / `sail:logs` | Read-only. `sail:info` even works before install, falling back to the app scan to preview what install would create. |
 
 <Callout type="warn">
-`sail:sync-env` skips an encrypted `.env.local` instead of corrupting it. In
-JSON mode that is reported as a file whose `action` is `skipped-encrypted`
-while the command still exits `0` — check the `files` array rather than the
-exit code alone.
+`sail:sync-env` skips an encrypted `.env.local` instead of corrupting it: the
+file is reported with `action: "skipped-encrypted"` and the command exits `1`,
+in JSON mode exactly as in human mode. `sail:up` reports the same skip but
+still exits `0` — the stack came up — so there, read the `envSync.files` array
+rather than the exit code.
 </Callout>
 
 ### Failures name the re-run

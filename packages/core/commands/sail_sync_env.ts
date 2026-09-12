@@ -40,6 +40,12 @@ export default class SailSyncEnv extends SailBaseCommand {
     const encrypted = result.files.filter((file) => file.action === 'skipped-encrypted');
     const synced = result.files.filter((file) => file.action !== 'skipped-encrypted');
 
+    // A skipped file means the sync did not happen, in either output mode:
+    // set the code before the JSON path returns, so agents and humans agree.
+    if (encrypted.length > 0) {
+      this.exitCode = 1;
+    }
+
     if (this.wantsJson) {
       this.printJson({
         status: 'synced',
@@ -57,7 +63,6 @@ export default class SailSyncEnv extends SailBaseCommand {
       );
     }
     for (const file of encrypted) {
-      this.exitCode = 1;
       this.logger.warning(encryptedEnvWarning(file.file));
     }
     if (synced.length > 0) {

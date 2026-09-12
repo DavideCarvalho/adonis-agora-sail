@@ -287,17 +287,15 @@ node ace sail:sync-env                      # re-sync ports without touching con
 If the file already holds varlock ciphertext — detected by the substring `varlock(` anywhere in the
 body, as in `SECRET=varlock(local:ABC123...)` — appending plaintext next to it would corrupt the
 file. Sail refuses instead: the file is left exactly as it was, the sync is reported as
-`skipped-encrypted`, and you get a warning. From `sail:sync-env` (which also exits with code `1`):
+`skipped-encrypted`, and you get a warning. Both commands print the same sentence:
 
 ```
 .env.local looks encrypted — ports NOT synced there, set them from `node ace sail:info --env` through your secret manager instead
 ```
 
-and from `sail:up`, which warns but keeps its success exit code because the stack did come up:
-
-```
-.env.local looks encrypted — ports NOT synced there, use `node ace sail:info --env`
-```
+They differ only in severity. `sail:sync-env` exits `1` — plaintext or JSON, the one thing it was
+asked to do did not happen — while `sail:up` keeps its success exit code, because the stack did come
+up.
 
 `node ace sail:info --env` prints the same sorted `KEY=value` lines to stdout, so you can pipe them
 into whatever writes your encrypted file, or `eval` them for a one-off shell. The `.gitignore`
