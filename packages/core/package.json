@@ -8,6 +8,20 @@
     "url": "git+https://github.com/DavideCarvalho/adonis-agora-sail.git",
     "directory": "packages/core"
   },
+  "homepage": "https://davidecarvalho.github.io/agora/docs/sail",
+  "bugs": {
+    "url": "https://github.com/DavideCarvalho/adonis-agora-sail/issues"
+  },
+  "keywords": [
+    "adonisjs",
+    "adonis",
+    "docker",
+    "docker-compose",
+    "sail",
+    "dev-environment",
+    "worktree",
+    "agora"
+  ],
   "author": "Davi Carvalho <davi@goflip.ai>",
   "type": "module",
   "main": "./dist/src/index.js",
@@ -59,15 +73,5 @@
   },
   "engines": {
     "node": ">=20.6.0"
-  },
-  "keywords": [
-    "adonisjs",
-    "adonis",
-    "docker",
-    "docker-compose",
-    "sail",
-    "dev-environment",
-    "worktree",
-    "agora"
-  ]
+  }
 }
