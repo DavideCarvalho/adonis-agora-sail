@@ -40,12 +40,13 @@ export type { DbShellService } from './db_shell.js';
 export { DB_SHELL_SERVICES, dbShellCommand, dbShellExample } from './db_shell.js';
 export { detectServices, detectServicesFromDependencies } from './detect.js';
 export type { RunResult } from './docker.js';
-export { DockerCompose, parsePsEntries } from './docker.js';
+export { DockerCompose, findTakenPorts, parsePortHolders, parsePsEntries } from './docker.js';
 export type { LocalEnvFileSync, SailLocalSyncResult } from './dotenv.js';
 export {
   DOTENV_EXAMPLE_FILE_NAME,
   DOTENV_FILE_NAME,
   dotenvKeysPresent,
+  encryptedEnvWarning,
   readDotEnvKeySets,
   syncSailLocalEnvs,
   TEST_LOCAL_ENV_FILE_NAME,
@@ -91,15 +92,24 @@ export type {
   SailServiceName,
   SailServiceStatus,
 } from './types.js';
-export type { SailEnvSyncResult, VarlockDetection } from './varlock.js';
+export type {
+  AuditPatternsAction,
+  SailEnvSyncResult,
+  SchemaSectionResult,
+  VarlockDetection,
+} from './varlock.js';
 export {
+  AUDIT_EXTRA_PATTERNS_LINES,
+  AUDIT_EXTRA_PATTERNS_NOTE,
   baseAppEnv,
   buildSailEnvBlock,
   buildSchemaSection,
   detectVarlock,
+  ensureAuditExtraPatterns,
   ensureGitignoreEntry,
   ensureSchemaSection,
   GITIGNORE_FILE_NAME,
+  hasAuditExtraPatterns,
   isEncryptedEnvContent,
   LOCAL_ENV_FILE_NAME,
   SAIL_ENV_END,
@@ -107,6 +117,7 @@ export {
   SAIL_SCHEMA_END,
   SAIL_SCHEMA_START,
   SCHEMA_FILE_NAME,
+  SCHEMA_ROOT_DIVIDER,
   sailEnvKeys,
   syncSailLocalEnv,
   upsertSailEnvBlock,

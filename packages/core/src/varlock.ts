@@ -18,6 +18,85 @@ export const SAIL_SCHEMA_END = '# sail:schema:end';
 export const SAIL_ENV_START = '# sail:start';
 export const SAIL_ENV_END = '# sail:end';
 
+/**
+ * The divider separating a varlock schema's root section (file-level
+ * decorators) from its items. Decorators below it attach to the item that
+ * follows, so sail only ever writes root decorators above it.
+ */
+export const SCHEMA_ROOT_DIVIDER = '# ---';
+
+/**
+ * Root decorators teaching `varlock audit`'s code scanner how an AdonisJS app
+ * reads env. The built-in patterns only see bare `process.env.X`-style
+ * identifiers, which an Adonis app never writes — without these, every key in
+ * the schema is reported as unreferenced.
+ *
+ * Two calls (they merge additively, like `@auditIgnorePaths`) so each idiom
+ * keeps its own explanation. The **first capture group is the env key**; the
+ * `regex('...')` form is mandatory because a bare `/.../` decorator arg cannot
+ * contain spaces, commas or parens. No `fileTypes=[...]`: omitting it covers
+ * the extensions the scanner already reads, `.ts` and `.js` included. No
+ * `^`/`$` anchors either — the scan runs without the `m` flag.
+ */
+export const AUDIT_EXTRA_PATTERNS_LINES: readonly string[] = [
+  '# env.get(\'KEY\') / env.get("KEY") — how config/*.ts and app code read env',
+  String.raw`# @auditExtraPatterns(regex('env\.get\(\s*\'([A-Z][A-Z0-9_]*)\''), regex('env\.get\(\s*"([A-Z][A-Z0-9_]*)"'))`,
+  '# KEY: Env.schema.…() — start/env.ts declarations, for keys only the framework reads',
+  String.raw`# @auditExtraPatterns(regex('([A-Z][A-Z0-9_]*)\s*:\s*Env\.schema\.'))`,
+];
+
+/**
+ * Reported (never applied) when the schema has no `# ---` divider: inserting
+ * one would silently turn the file's leading comments into root decorators,
+ * so the operator gets the lines and the place to put them instead.
+ */
+export const AUDIT_EXTRA_PATTERNS_NOTE = [
+  `varlock audit: ${SCHEMA_FILE_NAME} has no \`${SCHEMA_ROOT_DIVIDER}\` root divider, so sail did not add the Adonis env access patterns — adding the divider itself would reinterpret your leading comments as root decorators. Add \`${SCHEMA_ROOT_DIVIDER}\` above the first item, then these lines just above it:`,
+  ...AUDIT_EXTRA_PATTERNS_LINES,
+].join('\n');
+
+/** How `ensureSchemaSection` handled the `@auditExtraPatterns` decorators. */
+export type AuditPatternsAction = 'created' | 'inserted' | 'present' | 'manual';
+
+/**
+ * True when the schema already declares `@auditExtraPatterns` anywhere —
+ * sail's own line or a hand-written one. Either way sail keeps its hands off:
+ * calls merge additively, so a second copy would double every scan.
+ */
+export function hasAuditExtraPatterns(content: string): boolean {
+  return content.includes('@auditExtraPatterns');
+}
+
+/** Index of the root/items divider line, or -1 when the schema has none. */
+function dividerLineIndex(lines: string[]): number {
+  return lines.findIndex((line) => /^#\s*-{3,}$/.test(line.trim()));
+}
+
+/**
+ * Adds the audit patterns to an existing schema body, immediately above its
+ * `# ---` divider. Three outcomes, all non-destructive: `present` (the file
+ * already declares `@auditExtraPatterns`, left byte-identical), `inserted`,
+ * or `manual` — no divider to insert above, so the body is returned unchanged
+ * and the caller reports `AUDIT_EXTRA_PATTERNS_NOTE`.
+ */
+export function ensureAuditExtraPatterns(existing: string): {
+  content: string;
+  action: Exclude<AuditPatternsAction, 'created'>;
+} {
+  if (hasAuditExtraPatterns(existing)) {
+    return { content: existing, action: 'present' };
+  }
+
+  const lines = existing.split('\n');
+  const divider = dividerLineIndex(lines);
+  if (divider === -1) {
+    return { content: existing, action: 'manual' };
+  }
+
+  lines.splice(divider, 0, ...AUDIT_EXTRA_PATTERNS_LINES);
+  return { content: lines.join('\n'), action: 'inserted' };
+}
+
 export interface VarlockDetection {
   /** True when the app uses varlock: `.env.schema` exists or `varlock` is a dependency. */
   inUse: boolean;
@@ -151,30 +230,45 @@ function presentEnvKeys(content: string): Set<string> {
   return keys;
 }
 
+export interface SchemaSectionResult {
+  content: string;
+  /** Env keys newly declared by this run. */
+  added: string[];
+  /** What happened to the `@auditExtraPatterns` root decorators. */
+  auditPatterns: AuditPatternsAction;
+}
+
 /**
- * Ensures `.env.schema` declares every env key the services need. Creates a
- * minimal schema when there is none; otherwise appends only the missing items
- * (inside the managed marker block, creating it when absent) and never
- * touches keys the team already declares — their types and docs win.
+ * Ensures `.env.schema` declares every env key the services need, plus the
+ * `@auditExtraPatterns` root decorators that make `varlock audit` see Adonis'
+ * env access. Creates a full schema (root section, divider, managed item
+ * block) when there is none; otherwise appends only the missing items (inside
+ * the managed marker block, creating it when absent) and never touches keys
+ * the team already declares — their types and docs win.
  */
 export function ensureSchemaSection(
   existing: string | null,
   services: SailServiceName[],
-): { content: string; added: string[] } {
+): SchemaSectionResult {
   if (!existing || existing.trim().length === 0) {
     const header = [
       '# Managed by @adonis-agora/sail (`node ace sail:install`).',
       '# Declares the service connection schema with main-checkout defaults.',
       '',
+      ...AUDIT_EXTRA_PATTERNS_LINES,
+      SCHEMA_ROOT_DIVIDER,
+      '',
     ].join('\n');
     const content = `${header}${buildSchemaSection(services)}\n`;
-    return { content, added: sailEnvKeys(services) };
+    return { content, added: sailEnvKeys(services), auditPatterns: 'created' };
   }
 
-  const present = presentEnvKeys(existing);
+  const audited = ensureAuditExtraPatterns(existing);
+  const body = audited.content;
+  const present = presentEnvKeys(body);
   const missing = sailEnvKeys(services).filter((key) => !present.has(key));
   if (missing.length === 0) {
-    return { content: existing, added: [] };
+    return { content: body, added: [], auditPatterns: audited.action };
   }
 
   const defaults = baseAppEnv(services);
@@ -191,20 +285,22 @@ export function ensureSchemaSection(
     }
   }
 
-  const start = existing.indexOf(SAIL_SCHEMA_START);
-  const end = existing.indexOf(SAIL_SCHEMA_END);
+  const start = body.indexOf(SAIL_SCHEMA_START);
+  const end = body.indexOf(SAIL_SCHEMA_END);
   if (start !== -1 && end !== -1 && end > start) {
-    const before = existing.slice(0, end).replace(/\n+$/, '\n');
+    const before = body.slice(0, end).replace(/\n+$/, '\n');
     return {
-      content: `${before}${blocks.join('\n')}\n${existing.slice(end)}`,
+      content: `${before}${blocks.join('\n')}\n${body.slice(end)}`,
       added: missing,
+      auditPatterns: audited.action,
     };
   }
 
-  const separator = existing.endsWith('\n') ? '' : '\n';
+  const separator = body.endsWith('\n') ? '' : '\n';
   return {
-    content: `${existing}${separator}\n${[SAIL_SCHEMA_START, ...blocks, SAIL_SCHEMA_END].join('\n')}\n`,
+    content: `${body}${separator}\n${[SAIL_SCHEMA_START, ...blocks, SAIL_SCHEMA_END].join('\n')}\n`,
     added: missing,
+    auditPatterns: audited.action,
   };
 }
 

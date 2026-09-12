@@ -28,9 +28,10 @@ import { SailBaseCommand } from './sail_base_command.js';
  * the worktree port is still the target — the app may boot after the tunnel.
  * The command stays attached until interrupted (Ctrl+C), like
  * `sail:logs --follow`. With `--json` (the default inside AI agents) it
- * prints one JSON line (`{ url, local }`) on stdout once the tunnel
- * registers, keeps tunnel logs on stderr, and keeps running — kill the
- * command to stop sharing. No docker involved: the app runs on the host.
+ * prints exactly one JSON document (`{ url, local, … }`, plus `notice` /
+ * `warning` when the port resolution needed explaining) on stdout once the
+ * tunnel registers, keeps tunnel logs on stderr, and keeps running — kill
+ * the command to stop sharing. No docker involved: the app runs on the host.
  */
 export default class SailShare extends SailBaseCommand {
   static override commandName = 'sail:share';
@@ -68,17 +69,23 @@ export default class SailShare extends SailBaseCommand {
       baseOpen,
     );
 
+    // Under --json these travel inside the single result object below:
+    // stdout stays one JSON document, which is the whole contract agents
+    // parse against.
+    let notice: string | undefined;
+    let warning: string | undefined;
+
     if (resolvedFrom === 'base-fallback') {
       const hint = `worktree port :${port} is closed but base PORT :${basePort} answers — sharing :${basePort} (core worktree-port not active?)`;
       if (this.wantsJson) {
-        this.printJson({ notice: hint });
+        notice = hint;
       } else {
         this.logger.info(hint);
       }
     } else if (resolvedFrom === 'unverified') {
       const hint = `Nothing is listening on :${port} — start the app first (e.g. \`node ace serve --hmr\`), then re-run`;
       if (this.wantsJson) {
-        this.printJson({ warning: hint, port, basePort, portOffset: offset });
+        warning = hint;
       } else {
         this.logger.warning(`${hint} (continuing anyway — the app may still be booting)`);
       }
@@ -86,7 +93,7 @@ export default class SailShare extends SailBaseCommand {
 
     const local = `http://127.0.0.1:${targetPort}`;
     if (this.wantsJson) {
-      await this.#runJson(local, targetPort, basePort, offset, resolvedFrom);
+      await this.#runJson(local, targetPort, basePort, offset, resolvedFrom, { notice, warning });
       return;
     }
 
@@ -109,8 +116,8 @@ export default class SailShare extends SailBaseCommand {
   }
 
   /**
-   * Agent path: piped so stdout stays a single JSON line. Tunnel logs go to
-   * stderr; the command runs until killed.
+   * Agent path: piped so stdout stays a single JSON document. Tunnel logs go
+   * to stderr; the command runs until killed.
    */
   async #runJson(
     target: string,
@@ -118,6 +125,7 @@ export default class SailShare extends SailBaseCommand {
     basePort: number,
     offset: number,
     resolvedFrom: 'worktree' | 'base-fallback' | 'unverified',
+    hints: { notice?: string | undefined; warning?: string | undefined } = {},
   ): Promise<void> {
     const child = spawn('cloudflared', ['tunnel', '--url', target], {
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -129,29 +137,31 @@ export default class SailShare extends SailBaseCommand {
 
     const url = await new Promise<string | null>((resolve) => {
       let output = '';
-      const timer = setTimeout(() => resolve(null), SHARE_URL_TIMEOUT_MS);
+      let timer: ReturnType<typeof setTimeout>;
+      // The scanner detaches as soon as the URL is known: a tunnel can live
+      // for hours, and a listener still appending to `output` would grow
+      // with every line cloudflared logs.
+      const settle = (found: string | null) => {
+        clearTimeout(timer);
+        child.stdout?.off('data', onData);
+        child.stderr?.off('data', onData);
+        resolve(found);
+      };
       const onData = (chunk: Buffer | string) => {
         output += chunk.toString();
         const found = parseTunnelUrl(output);
         if (found) {
-          clearTimeout(timer);
-          resolve(found);
+          settle(found);
         }
       };
+      timer = setTimeout(() => settle(null), SHARE_URL_TIMEOUT_MS);
       child.stdout?.on('data', onData);
       child.stderr?.on('data', onData);
-      child.once('error', () => {
-        clearTimeout(timer);
-        resolve(null);
-      });
-      child.once('close', () => {
-        clearTimeout(timer);
-        resolve(parseTunnelUrl(output));
-      });
+      child.once('error', () => settle(null));
+      child.once('close', () => settle(parseTunnelUrl(output)));
     });
 
     if (!url) {
-      this.exitCode = 1;
       try {
         child.kill();
       } catch {
@@ -164,7 +174,16 @@ export default class SailShare extends SailBaseCommand {
       return;
     }
 
-    this.printJson({ url, local: target, port, basePort, portOffset: offset, resolvedFrom });
+    this.printJson({
+      url,
+      local: target,
+      port,
+      basePort,
+      portOffset: offset,
+      resolvedFrom,
+      ...(hints.notice ? { notice: hints.notice } : {}),
+      ...(hints.warning ? { warning: hints.warning } : {}),
+    });
 
     const stop = () => {
       try {

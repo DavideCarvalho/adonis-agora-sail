@@ -5,13 +5,17 @@ import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import {
+  AUDIT_EXTRA_PATTERNS_LINES,
   baseAppEnv,
   buildSailEnvBlock,
   buildSchemaSection,
   detectVarlock,
+  ensureAuditExtraPatterns,
   ensureGitignoreEntry,
   ensureSchemaSection,
+  hasAuditExtraPatterns,
   isEncryptedEnvContent,
+  SCHEMA_ROOT_DIVIDER,
   sailEnvKeys,
   syncSailLocalEnv,
   upsertSailEnvBlock,
@@ -126,6 +130,161 @@ describe('ensureSchemaSection', () => {
     expect(added).toEqual(['DB_HOST', 'DB_PORT', 'DB_USER', 'DB_PASSWORD', 'DB_DATABASE']);
     expect(twice.match(/# sail:schema:start/g)).toHaveLength(1);
     expect(twice).toContain('DB_PORT=5432');
+  });
+});
+
+describe('audit extra patterns', () => {
+  /**
+   * The emitted lines are what varlock parses, so the tests read the patterns
+   * back out of them: `regex('...')` bodies, with the `\'` escaping the DSL
+   * needs for a single quote inside a single-quoted arg undone.
+   */
+  function emittedPatterns(): RegExp[] {
+    const decorators = AUDIT_EXTRA_PATTERNS_LINES.filter((line) =>
+      line.includes('@auditExtraPatterns'),
+    );
+    const patterns: RegExp[] = [];
+    for (const line of decorators) {
+      for (const match of line.matchAll(/regex\('((?:[^'\\]|\\.)*)'\)/g)) {
+        patterns.push(new RegExp((match[1] as string).replace(/\\'/g, "'")));
+      }
+    }
+    return patterns;
+  }
+
+  it('emits exactly two decorator calls, one per idiom, each with a comment', () => {
+    expect(AUDIT_EXTRA_PATTERNS_LINES).toHaveLength(4);
+    expect(AUDIT_EXTRA_PATTERNS_LINES[0]?.startsWith('# @')).toBe(false);
+    expect(AUDIT_EXTRA_PATTERNS_LINES[1]).toContain('# @auditExtraPatterns(');
+    expect(AUDIT_EXTRA_PATTERNS_LINES[2]?.startsWith('# @')).toBe(false);
+    expect(AUDIT_EXTRA_PATTERNS_LINES[3]).toContain('# @auditExtraPatterns(');
+    // Every pattern is a regex() call — a bare /.../ arg cannot hold parens.
+    for (const line of AUDIT_EXTRA_PATTERNS_LINES.filter((l) => l.includes('@audit'))) {
+      expect(line).toContain("regex('");
+    }
+    // No anchors: the scan runs without the `m` flag.
+    expect(AUDIT_EXTRA_PATTERNS_LINES.join('\n')).not.toMatch(/[^\\][$^]/);
+  });
+
+  it('captures the env key from real Adonis snippets', () => {
+    const [singleQuoted, doubleQuoted, declaration] = emittedPatterns();
+    expect(emittedPatterns()).toHaveLength(3);
+
+    expect("const host = env.get('DB_HOST')".match(singleQuoted as RegExp)?.[1]).toBe('DB_HOST');
+    expect('const host = env.get("DB_HOST")'.match(doubleQuoted as RegExp)?.[1]).toBe('DB_HOST');
+    expect('  DB_HOST: Env.schema.string(),'.match(declaration as RegExp)?.[1]).toBe('DB_HOST');
+
+    // Second-argument defaults and whitespace variants are common in config/*.ts.
+    expect("  host: env.get( 'DB_HOST', '127.0.0.1'),".match(singleQuoted as RegExp)?.[1]).toBe(
+      'DB_HOST',
+    );
+    expect('  PORT: Env.schema.number(),'.match(declaration as RegExp)?.[1]).toBe('PORT');
+    expect(
+      "    LOG_LEVEL: Env.schema.enum(['fatal', 'info'] as const),".match(
+        declaration as RegExp,
+      )?.[1],
+    ).toBe('LOG_LEVEL');
+  });
+
+  it('does not fire on unrelated code', () => {
+    const [singleQuoted, , declaration] = emittedPatterns();
+    expect("cache.get('DB_HOST')").not.toMatch(singleQuoted as RegExp);
+    expect('  name: vine.string(),').not.toMatch(declaration as RegExp);
+  });
+
+  it('inserts the lines immediately above an existing divider', () => {
+    const existing = ['# @defaultSensitive(false)', SCHEMA_ROOT_DIVIDER, 'APP_ENV=development', ''];
+    const { content, action } = ensureAuditExtraPatterns(existing.join('\n'));
+    expect(action).toBe('inserted');
+    expect(content.split('\n')).toEqual([
+      '# @defaultSensitive(false)',
+      ...AUDIT_EXTRA_PATTERNS_LINES,
+      SCHEMA_ROOT_DIVIDER,
+      'APP_ENV=development',
+      '',
+    ]);
+  });
+
+  it('leaves a schema that already declares the decorator alone', () => {
+    const existing = [
+      '# @auditExtraPatterns(regex(\'cfg\\.get\\("([A-Z_]+)"\\)\'))',
+      SCHEMA_ROOT_DIVIDER,
+      'APP_ENV=development',
+      '',
+    ].join('\n');
+    const { content, action } = ensureAuditExtraPatterns(existing);
+    expect(action).toBe('present');
+    expect(content).toBe(existing);
+    expect(content.match(/@auditExtraPatterns/g)).toHaveLength(1);
+  });
+
+  it('reports instead of writing when the schema has no divider', () => {
+    const existing = '# our env\nAPP_ENV=development\n';
+    const { content, action } = ensureAuditExtraPatterns(existing);
+    expect(action).toBe('manual');
+    expect(content).toBe(existing);
+  });
+
+  it('recognizes long dividers and rejects non-divider lines', () => {
+    expect(ensureAuditExtraPatterns('# ------\nA=1\n').action).toBe('inserted');
+    expect(ensureAuditExtraPatterns('# -\nA=1\n').action).toBe('manual');
+    expect(hasAuditExtraPatterns('# @auditIgnorePaths(fixtures)\n')).toBe(false);
+  });
+});
+
+describe('ensureSchemaSection + audit patterns', () => {
+  it('creates a root section with the decorators above the divider', () => {
+    const { content, auditPatterns } = ensureSchemaSection(null, ['redis']);
+    expect(auditPatterns).toBe('created');
+
+    const lines = content.split('\n');
+    const divider = lines.indexOf(SCHEMA_ROOT_DIVIDER);
+    const decorator = lines.findIndex((line) => line.includes('@auditExtraPatterns'));
+    const block = lines.indexOf('# sail:schema:start');
+    expect(decorator).toBeGreaterThan(0);
+    expect(divider).toBeGreaterThan(decorator);
+    expect(block).toBeGreaterThan(divider);
+    // Header comments stay first, item block below the divider is unchanged.
+    expect(lines[0]).toContain('Managed by @adonis-agora/sail');
+    expect(content.slice(content.indexOf('# sail:schema:start'))).toBe(
+      `${buildSchemaSection(['redis'])}\n`,
+    );
+    expect(lines.filter((line) => line === SCHEMA_ROOT_DIVIDER)).toHaveLength(1);
+  });
+
+  it('inserts the decorators above the divider of an existing schema', () => {
+    const existing = `# @defaultRequired(false)\n${SCHEMA_ROOT_DIVIDER}\nDB_HOST=db.internal\n`;
+    const { content, added, auditPatterns } = ensureSchemaSection(existing, ['postgres']);
+    expect(auditPatterns).toBe('inserted');
+    expect(added).toEqual(['DB_PORT', 'DB_USER', 'DB_PASSWORD', 'DB_DATABASE']);
+    expect(content.indexOf('@auditExtraPatterns')).toBeLessThan(
+      content.indexOf(SCHEMA_ROOT_DIVIDER),
+    );
+    expect(content).toContain('DB_HOST=db.internal');
+    expect(content).toContain('DB_PORT=5432');
+  });
+
+  it('never emits a second copy of the decorator', () => {
+    const { content: once } = ensureSchemaSection(null, ['redis']);
+    const twice = ensureSchemaSection(once, ['redis', 'postgres']);
+    expect(twice.auditPatterns).toBe('present');
+    expect(twice.content.match(/@auditExtraPatterns/g)).toHaveLength(2);
+
+    const handWritten = `# @auditExtraPatterns(regex('cfg\\.get'))\n${SCHEMA_ROOT_DIVIDER}\nA=1\n`;
+    const merged = ensureSchemaSection(handWritten, ['redis']);
+    expect(merged.auditPatterns).toBe('present');
+    expect(merged.content.match(/@auditExtraPatterns/g)).toHaveLength(1);
+  });
+
+  it('reports, without rewriting, a schema that has no divider', () => {
+    const existing = '# @type=string\nDB_HOST=db.internal\n';
+    const { content, added, auditPatterns } = ensureSchemaSection(existing, ['postgres']);
+    expect(auditPatterns).toBe('manual');
+    expect(content).not.toContain('@auditExtraPatterns');
+    expect(content).not.toContain(SCHEMA_ROOT_DIVIDER);
+    // The keys are still appended — only the divider-dependent part is skipped.
+    expect(added).toEqual(['DB_PORT', 'DB_USER', 'DB_PASSWORD', 'DB_DATABASE']);
+    expect(content.startsWith(existing)).toBe(true);
   });
 });
 

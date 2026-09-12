@@ -1,7 +1,11 @@
+import { mkdtemp, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { buildSailContext } from '../src/context.js';
-import { DockerCompose, parsePsEntries } from '../src/docker.js';
+import { DockerCompose, findTakenPorts, parsePortHolders, parsePsEntries } from '../src/docker.js';
 
 describe('DockerCompose.portEnvironment', () => {
   it('exposes base ports in the main checkout', () => {
@@ -29,6 +33,35 @@ describe('DockerCompose.portEnvironment', () => {
     expect(docker.servicePorts('postgres')).toEqual({
       SAIL_POSTGRES_PORT: 5432 + context.portOffset,
     });
+  });
+});
+
+describe('DockerCompose.wantedHostPorts', () => {
+  const docker = new DockerCompose(buildSailContext('/apps/shop', 'shop', null));
+
+  it('only probes the ports of the services it is given', () => {
+    // A postgres-only stack must not refuse to start over someone else's
+    // MySQL on 3306 — the preflight is scoped to the compose file.
+    expect(docker.wantedHostPorts(['postgres'])).toEqual([5432]);
+    expect(docker.wantedHostPorts(['postgres', 'redis'])).toEqual([5432, 6379]);
+  });
+
+  it('expands multi-port services and dedupes', () => {
+    expect(docker.wantedHostPorts(['mailpit', 'minio'])).toEqual([1025, 8025, 8900, 9000]);
+    expect(docker.wantedHostPorts(['redis', 'redis'])).toEqual([6379]);
+    expect(docker.wantedHostPorts([])).toEqual([]);
+  });
+
+  it('applies the worktree offset', () => {
+    const context = buildSailContext('/wt/login', 'shop', {
+      name: 'login',
+      slug: 'login',
+      hash: 'abc123',
+      path: '/wt/login',
+    });
+    expect(new DockerCompose(context).wantedHostPorts(['postgres'])).toEqual([
+      5432 + context.portOffset,
+    ]);
   });
 });
 
@@ -64,5 +97,64 @@ describe('parsePsEntries', () => {
 
   it('returns an empty list for blank output', () => {
     expect(parsePsEntries('  \n ')).toEqual([]);
+  });
+});
+
+describe('findTakenPorts', () => {
+  it('reports closed ports as free', async () => {
+    await expect(findTakenPorts([1, 2])).resolves.toEqual([]);
+  });
+
+  it('reports a listening socket as taken', async () => {
+    const server = createServer();
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    const port = typeof address === 'object' && address ? address.port : 0;
+    await expect(findTakenPorts([1, port])).resolves.toEqual([port]);
+    server.close();
+  });
+});
+
+describe('DockerCompose.composeServices', () => {
+  it('scopes the preflight to the services the compose file declares', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'sail-docker-'));
+    await writeFile(
+      join(dir, 'compose.yml'),
+      'services:\n  postgres:\n    image: postgres:17\n',
+      'utf8',
+    );
+    const docker = new DockerCompose(buildSailContext(dir, 'shop', null));
+    await expect(docker.composeServices()).resolves.toEqual(['postgres']);
+
+    // Only postgres is declared, so nothing else is ever probed: a foreign
+    // MySQL on 3306 (or a Mailpit on 8025) cannot block this stack.
+    expect(docker.wantedHostPorts(await docker.composeServices())).toEqual([5432]);
+    expect(docker.wantedHostPorts(await docker.composeServices())).not.toContain(3306);
+  });
+
+  it('resolves empty when the compose file is missing', async () => {
+    const docker = new DockerCompose(buildSailContext('/nope/missing', 'shop', null));
+    await expect(docker.composeServices()).resolves.toEqual([]);
+    await expect(docker.takenHostPorts()).resolves.toEqual([]);
+  });
+});
+
+describe('parsePortHolders', () => {
+  it('maps published host ports to container names', () => {
+    const holders = parsePortHolders(
+      JSON.stringify([
+        { Names: 'shop-main-postgres-1', Ports: '0.0.0.0:5432->5432/tcp, :::5432->5432/tcp' },
+        { Names: 'shop-main-redis-1', Ports: '0.0.0.0:6379->6379/tcp' },
+        { Names: 'unpublished', Ports: '' },
+      ]),
+    );
+    expect(holders.get(5432)).toEqual(['shop-main-postgres-1']);
+    expect(holders.get(6379)).toEqual(['shop-main-redis-1']);
+    expect(holders.has(1025)).toBe(false);
+  });
+
+  it('returns an empty map for blank or garbage output', () => {
+    expect(parsePortHolders('  \n ').size).toBe(0);
+    expect(parsePortHolders('not json').size).toBe(0);
   });
 });

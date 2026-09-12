@@ -66,10 +66,10 @@ export default class SailLogs extends SailBaseCommand {
     }
 
     if (result.exitCode !== 0) {
-      this.exitCode = result.exitCode;
       this.failJsonAware(
         `Could not read logs:\n${this.tailLines(result.stderr || result.stdout)}`,
         'Is the Docker daemon running? Check the service name with `node ace sail:ps`',
+        result.exitCode,
       );
       return;
     }

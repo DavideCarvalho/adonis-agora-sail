@@ -52,10 +52,10 @@ export default class SailDown extends SailBaseCommand {
     const context = await this.sailContext();
     const result = await docker.down({ volumes: this.volumes });
     if (result.exitCode !== 0) {
-      this.exitCode = result.exitCode;
       this.failJsonAware(
         `sail:down failed:\n${this.tailLines(result.stderr || result.stdout)}`,
         'Is the Docker daemon running?',
+        result.exitCode,
       );
       return;
     }

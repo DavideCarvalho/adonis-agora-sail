@@ -22,6 +22,19 @@ describe('dbShellCommand', () => {
     expect(dbShellCommand('redis', ['ping'])).toEqual(['redis-cli', 'ping']);
   });
 
+  it('keeps ace flags before the `--` separator', () => {
+    // Everything after `--` is handed to the client, so a trailing --json
+    // would reach psql instead of ace.
+    expect(dbShellExample('postgres', { json: true })).toBe(
+      `node ace sail:psql --json -- -c 'select 1'`,
+    );
+    expect(dbShellExample('redis', { json: true })).toBe('node ace sail:redis --json -- ping');
+    for (const service of DB_SHELL_SERVICES) {
+      const example = dbShellExample(service, { json: true });
+      expect(example.indexOf('--json')).toBeLessThan(example.indexOf(' -- '));
+    }
+  });
+
   it('covers every shell service', () => {
     expect(DB_SHELL_SERVICES).toEqual(['postgres', 'mysql', 'redis']);
     for (const service of DB_SHELL_SERVICES) {
