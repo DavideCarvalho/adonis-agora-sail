@@ -1,0 +1,283 @@
+---
+title: Worktrees
+description: How sail derives one compose project per git worktree, shifts every host port by a deterministic hash of the worktree name, syncs those ports into the local dot-env overrides, and cleans up stacks whose worktree is gone.
+icon: GitBranch
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Sail is worktree-native: no flags, no per-worktree compose overrides. Every
+command first resolves a context — which worktree the app root lives in, which
+compose project to target, which port offset to apply:
+
+```ts
+interface SailContext {
+  appName: string          // package.json name, sanitized
+  projectName: string      // appName, or `appName-<worktree slug>`
+  worktree: GitWorktree | null
+  portOffset: number       // 0 in the main checkout
+  composeFilePath: string  // <appRoot>/compose.yml
+}
+```
+
+## The compose project name
+
+The app name comes from `package.json`, last path segment only, so `@acme/shop`
+becomes `shop`; without a readable `package.json` sail falls back to the app
+root's directory name. It is then sanitized into something compose accepts —
+lowercased, every run of characters outside `[a-z0-9_-]` collapsed to a single
+`-`, leading `_`/`-` and trailing `-` stripped, empty result replaced by `app`.
+So `My App` becomes `my-app`, `@scope/my-app` becomes `scope-my-app`, and
+`UPPER_CASE.name` becomes `upper_case-name`.
+
+In the **main checkout** the project name is that bare app name (`shop`) and the
+offset is `0` — the textbook ports, so a teammate who never opens a worktree
+sees exactly what the README says. In a **linked worktree** it becomes
+`sanitize(appName + '-' + worktree.slug)`: a worktree checked out at
+`../shop-worktrees/feature-login` runs the project `shop-feature-login`.
+
+Docker prefixes named volumes and the default network with the project name, so
+`sail-postgres` becomes `shop-feature-login_sail-postgres`. Each worktree gets
+its own database files, Redis dump and MinIO contents; dropping one worktree's
+data never touches the main checkout's.
+
+<Callout type="info">
+The worktree name is its **directory basename**, not the branch. Two worktrees
+on different branches in identically-named directories (under different parents)
+resolve to the same project and the same ports — name worktree directories after
+what you are doing in them. Note that the project name is built from the
+worktree's *slug* while the offset hashes its raw *name* (which is what
+`@adonisjs/core` hashes for the `serve` port, so the app and its services shift
+together). Directory names that differ only in case or punctuation —
+`Feature Login` and `feature-login` — therefore share a compose project but not
+a port offset; avoid that pair.
+</Callout>
+
+## The port offset
+
+```ts
+export const PORT_RANGE = 1000
+
+export function computeWorktreePortOffset(worktreeName: string): number {
+  const hash = createHash('sha1').update(worktreeName).digest()
+  return hash.readUInt32BE(0) % PORT_RANGE
+}
+```
+
+The first four bytes of the SHA-1 digest of the worktree name, read as a
+big-endian `uint32`, modulo 1000. Every host port the stack publishes is
+`basePort + offset`:
+
+| service | env var | base | `feature-login` (+403) |
+| --- | --- | --- | --- |
+| postgres | `SAIL_POSTGRES_PORT` | 5432 | 5835 |
+| mysql | `SAIL_MYSQL_PORT` | 3306 | 3709 |
+| redis | `SAIL_REDIS_PORT` | 6379 | 6782 |
+| mailpit (smtp) | `SAIL_MAILPIT_SMTP_PORT` | 1025 | 1428 |
+| mailpit (ui) | `SAIL_MAILPIT_UI_PORT` | 8025 | 8428 |
+| minio (s3) | `SAIL_MINIO_PORT` | 9000 | 9403 |
+| minio (console) | `SAIL_MINIO_CONSOLE_PORT` | 8900 | 9303 |
+
+**It is deterministic across machines.** The offset is a pure function of a
+string — no counters, no lock file, no "first free port" scan, nothing
+persisted. A teammate whose worktree directory is also named `feature-login`
+gets `5835` too.
+
+**The committed compose file is identical everywhere.** Ports are written
+as `${SAIL_POSTGRES_PORT:-5432}` interpolations and sail injects the offset
+`SAIL_*_PORT` variables into the environment of every `docker compose` call it
+spawns — a bare `docker compose up` with no sail still works, on the base ports.
+
+**The range matches core's.** `PORT_RANGE` is 1000 because that is the
+range `@adonisjs/core`'s worktree-aware `serve` uses for the HTTP port, so the
+app port and the service ports shift together. (On a core without that patch the
+app still serves on plain `PORT`; [`sail:share`](/docs/sail/sharing) handles
+both.)
+
+### Collisions
+
+There is no collision avoidance, by design — the offset is a hash, not an
+allocation:
+
+- two worktree names can hash to the same offset (roughly 1 in 1000);
+- offsets are shared across *apps*: two projects with a worktree named `main-2`
+  land on the same numbers;
+- service ranges overlap — Postgres spans 5432–6431 and Redis 6379–7378, so one
+  worktree's Postgres can sit on another worktree's Redis port;
+- a worktree whose name hashes to `0` collides with the main checkout.
+
+None of this is silent: the [`sail:up` preflight](#the-sailup-port-preflight)
+turns each case into a loud, named failure instead of a cross-wired stack. The
+fix is `git worktree move` — a different directory name re-hashes to a
+different offset.
+
+## Detection and the git requirement
+
+Detection is `getGitWorktree()` from `@poppinss/utils`, which runs
+`git worktree list --porcelain -z`, resolves the real path of every listed
+worktree, picks the longest one containing the app root, and returns `null` when
+that is the **first** entry (the main worktree) or when the app root is outside
+a git repository. The offset keys on `name` verbatim — case-sensitive, spaces
+included.
+
+<Callout type="warn">
+The `-z` flag requires **git ≥ 2.36**. On older git the child process exits
+non-zero, the error is swallowed, `null` is returned, and sail behaves exactly
+as if you were in the main checkout: bare project name, offset `0`, no warning.
+Every worktree then races for the same containers and the same ports — run
+`node ace sail:info` and check the `worktree` field if the ports look suspiciously
+round.
+</Callout>
+
+## Env syncing
+
+Shifted ports are useless if the app does not know them. After a successful
+`sail:up` — and on every `sail:sync-env` — sail writes the stack's resolved
+connection env into **two** files in the app root:
+
+- **`.env.local`** — the override Adonis loads over `.env` in every environment
+  except `test`;
+- **`.env.test.local`** — the override the loader reads under `NODE_ENV=test`,
+  where `.env.local` is skipped entirely.
+
+The dot-env loader reads, in priority order:
+
+```ini
+.env.[NODE_ENV].local   # e.g. .env.test.local
+.env.local              # skipped when NODE_ENV=test
+.env.[NODE_ENV]
+.env
+```
+
+That second file is why `node ace test` in a worktree does not silently hit the
+main checkout's database: without it the loader falls through to `.env`, whose
+`DB_PORT=5432` points at whatever is listening on the base port. Both files are
+created when missing and added to `.gitignore` (exact-line match, so an existing
+entry is not duplicated).
+
+Only connection coordinates are written — the enabled services' app env, offset
+applied, sorted, inside a marker block:
+
+```ini
+# sail:start
+# Managed by @adonis-agora/sail — per-worktree service ports. Do not edit;
+# re-run `node ace sail:sync-env` to refresh.
+DB_DATABASE=app
+DB_HOST=127.0.0.1
+DB_PASSWORD=password
+DB_PORT=5835
+DB_USER=sail
+REDIS_HOST=127.0.0.1
+REDIS_PORT=6782
+# sail:end
+```
+
+Mailpit adds `SMTP_HOST` / `SMTP_PORT`, MinIO adds `AWS_ACCESS_KEY_ID`,
+`AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `S3_BUCKET` and `S3_ENDPOINT`. Everything
+outside the markers is preserved byte for byte.
+
+The sync is **idempotent**: the block is replaced in place when present,
+appended when absent, and when the result equals what is on disk nothing is
+written at all (reported as `unchanged`). Safe in a loop, in a script, in an
+agent's retry.
+
+A file containing `varlock(` is ciphertext; appending plaintext next to it would
+corrupt it, so sail skips that file — per file, so an encrypted `.env.local`
+still leaves `.env.test.local` synced. You get a warning pointing at
+`node ace sail:info --env`; `sail:up` still succeeds, `sail:sync-env` exits `1`. See
+[varlock](/docs/sail/varlock).
+
+## `sail:sync-env`
+
+`sail:up` runs the same sync, so most days you never call this one. It is the
+standalone, docker-free primitive for when the ports on disk drift from the
+ports sail would compute:
+
+```bash
+node ace sail:sync-env          # or --json
+```
+
+Reach for it after a `git worktree add` into a checkout whose `.env.local` came
+along for the ride, after renaming the worktree directory (the name is the hash
+input, so the offset moves), after renaming the app in `package.json` (which
+moves the project name, and therefore which stack the app talks to), after
+enabling a new service with `sail:install`, or after any manual edit that
+clobbered the managed block.
+
+It touches no containers and never starts docker, so it is safe while the stack
+is down; it fails with a hint when no services are enabled yet. Per-flag detail
+lives in [commands](/docs/sail/commands).
+
+## The `sail:up` port preflight
+
+Before calling `docker compose up`, `sail:up` probes the host ports the stack
+wants with a short TCP connect to `127.0.0.1:<port>` each — a closed port is
+simply free, never an error. Ports the stack's own running containers already
+publish (read from `docker compose ps`) are subtracted, so **re-running `up` on
+a live stack stays a silent success**.
+
+Anything left is foreign. Sail maps those ports to container names via
+`docker ps --format json` and fails before touching compose:
+
+```text
+Cannot start: host port(s) already in use: :5621 (held by shop-main-postgres-1)
+Stop the other stack (`node ace sail:down` in that worktree), pick a worktree
+with free ports, or run `node ace sail:prune` for orphans
+```
+
+The alternative is worse than a failed command: the app would connect straight
+through to another worktree's database and migrate it. Three details:
+
+- the holder lookup is best-effort — a port held by a non-docker process still
+  fails the preflight, just without a name (`:5621`);
+- reading the stack's own published ports is fail-closed: if `docker compose ps`
+  errors, every taken port counts as foreign;
+- the probe is scoped to the services your `compose.yml` declares, so an
+  unrelated MySQL on `3306` never blocks a postgres-only stack; when the compose
+  file cannot be read there is nothing to probe and the preflight is skipped.
+
+## `sail:prune`
+
+Deleting a worktree directory does not stop its containers — `git worktree
+remove` knows nothing about docker. `sail:prune` finds the leftovers:
+
+```bash
+node ace sail:prune --dry-run   # list only
+node ace sail:prune             # stop them
+node ace sail:prune --volumes   # and delete their data
+```
+
+It lists every compose project on the daemon (`docker compose ls --format json`,
+both the JSON-array and the NDJSON shape) and keeps one only when **both** hold:
+
+1. **It belongs to this app** — the project name equals the sanitized app name
+   or starts with `appName-`. For `shop`, that matches `shop` and
+   `shop-feature-login` but not `shopify`; other apps' projects are never
+   candidates, however abandoned they look.
+2. **Every compose file it reports is gone from disk.** A project reporting no
+   config files at all is left alone: with no path there is nothing to verify,
+   and guessing would mean stopping a live stack.
+
+Matches are stopped with a project-scoped, file-less
+`docker compose --project-name <name> down --remove-orphans` — the compose file
+is gone, so it cannot be passed — plus `--volumes` when asked. Failures are
+reported per project and set a non-zero exit code.
+
+<Callout type="warn">
+`prune` derives the app name from the checkout you run it in, so renaming the
+app in `package.json` makes stacks created under the old name stop being
+"managed" — clean those up once with `docker compose --project-name <old> down`.
+</Callout>
+
+## Rules of thumb
+
+- **Never hardcode `5432`** (or `6379`, or `8025`) outside the main checkout.
+  The number is a function of your directory name.
+- **Ask, don't guess.** `node ace sail:info` is the source of truth, `--json`
+  for machines. See [agents](/docs/sail/agents).
+- **One stack per worktree.** `sail:down` when you are done with a worktree,
+  `sail:prune` when you deleted the directory first.
+- **Let sail own the env block.** Edit around `# sail:start` / `# sail:end`,
+  never inside — the next `sail:up` rewrites it.
+- **Name worktree directories meaningfully.** The name is the hash input, the
+  project suffix, and what shows up in preflight failures.

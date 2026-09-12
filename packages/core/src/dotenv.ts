@@ -71,6 +71,16 @@ export function upsertDotEnvKeys(existing: string | null, values: Record<string,
   return `${out.join('\n')}\n`;
 }
 
+/**
+ * The one wording for "this file is ciphertext, so sail left it alone".
+ * `sail:sync-env` treats it as a failure (its only job could not be done)
+ * and `sail:up` as a warning (the stack still came up), but the user-facing
+ * sentence — and the way out — is the same in both.
+ */
+export function encryptedEnvWarning(file: string): string {
+  return `${file} looks encrypted — ports NOT synced there, set them from \`node ace sail:info --env\` through your secret manager instead`;
+}
+
 export interface LocalEnvFileSync {
   file: string;
   action: 'created' | 'updated' | 'unchanged' | 'skipped-encrypted';

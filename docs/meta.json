@@ -1,6 +1,20 @@
 {
   "title": "Sail",
-  "pages": ["index", "getting-started"],
+  "pages": [
+    "index",
+    "getting-started",
+    "---Guides---",
+    "install",
+    "services",
+    "worktrees",
+    "sharing",
+    "---Integrations---",
+    "varlock",
+    "agents",
+    "---Reference---",
+    "commands",
+    "troubleshooting"
+  ],
   "root": true,
   "description": "Docker-powered local dev services for AdonisJS — worktree-native isolated stacks, deterministic ports, and agent-friendly JSON output.",
   "icon": "Ship"

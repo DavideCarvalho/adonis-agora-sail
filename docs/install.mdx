@@ -1,0 +1,306 @@
+---
+title: Install
+description: What `node ace add @adonis-agora/sail` registers, how `sail:install` derives the service list from package.json, start/env.ts and config/*.ts, and every file it writes — append-only, idempotent, Docker not required.
+icon: Wrench
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Setting sail up is two commands, and they do very different things.
+
+```bash
+node ace add @adonis-agora/sail   # registers the commands in adonisrc.ts
+node ace sail:install             # scans the app and writes the wiring
+```
+
+**`add`** runs the package's `configure` hook, whose entire job is one codemod:
+`rcFile.addCommand('@adonis-agora/sail/commands')`. That line in `adonisrc.ts`
+is what makes `sail:install`, `sail:up`, `sail:info` and the rest show up in
+`node ace list`. **No provider is registered and no config file is written** —
+sail is dev tooling, never boots with the app, has no runtime surface and no
+container bindings. It belongs in `devDependencies`.
+
+**`sail:install`** scans the app, decides which services it needs, and wires
+everything: `compose.yml`, `start/env.ts` validations, `.env` / `.env.example`
+defaults, the varlock schema, an `AGENTS.md` section. Docker is **not**
+required — it only reads and writes files.
+
+## Flags
+
+| Flag | Effect |
+| --- | --- |
+| `--services=<name>` | Repeatable. Skips detection entirely and uses exactly these services. Valid: `postgres`, `mysql`, `redis`, `mailpit`, `minio`. |
+| `--json` | Machine-readable report on stdout. Defaults to **on** inside an AI coding agent. |
+
+There is no `--force` and no `--dry-run`: every write is append-only and
+re-running is always safe, so neither has anything to force or preview.
+
+## The detection pipeline
+
+Selection is resolved in strict precedence order:
+
+1. **`--services` flags win** over anything detected. An unknown name fails
+   with `Unknown service(s): …` plus the valid list. The scan still runs — its
+   env coverage and notes drive the wiring either way.
+2. **Otherwise the scan runs** over `package.json`, `start/env.ts` and every
+   `config/*.ts` / `config/*.js`. Missing files count as absent, never as
+   errors — a fresh checkout scans fine.
+3. **Nothing found** → a multi-select prompt listing the five services with
+   their summaries, or, when sail cannot prompt (AI agent, no TTY), a failure:
+   see [below](#when-nothing-is-detected).
+
+### 1. `package.json` dependencies
+
+`dependencies` and `devDependencies` are merged and matched against each
+service's `detectedBy` list:
+
+| Dependency | Service |
+| --- | --- |
+| `pg` | postgres |
+| `mysql2`, `mysql` | mysql |
+| `@adonisjs/redis`, `ioredis`, `bullmq` | redis |
+| `@adonisjs/mail` | mailpit |
+| `@adonisjs/drive`, `flydrive`, `@aws-sdk/client-s3` | minio |
+
+A dependency is the **weakest** signal sail has: it says a driver is installed,
+not that the app uses it — which is why a config can veto it (step 6).
+
+### 2. `config/database.ts`
+
+Parsed first — the pg/mysql tie-break, the Agora `lucid` selections and the
+vetoes all depend on it. Sail reads `client: '…'`, falling back to
+`connection: '…'`:
+
+| Value | Result |
+| --- | --- |
+| `pg`, `postgres` | postgres |
+| `mysql`, `mysql2` | mysql |
+| `better-sqlite3`, `sqlite3`, `sqlite` | no container — note: *"uses SQLite — no database container needed"* |
+| `libsql`, `mssql` | no container — sail ships no image for them |
+
+Every `env.get('…')` / `process.env.…` read in the file is collected for the env
+coverage report.
+
+### 3. The other first-party configs
+
+| File | Evidence required | Service |
+| --- | --- | --- |
+| `config/redis.ts` | the file exists and is non-empty after comment stripping | redis |
+| `config/mail.ts` | `transports.smtp(` / an `smtp:` mailer key / `SMTP_HOST` / `SMTP_PORT` | mailpit |
+| `config/drive.ts` | `services.s3(` / `disks.s3(` / `disk: 's3'` / `AWS_ACCESS_KEY_ID` / `S3_BUCKET` / `S3_ENDPOINT` | minio |
+
+`config/queue.ts` is recognised as first-party too, but only contributes env reads.
+
+### 4. Any other `config/*.ts`
+
+Everything else — first-party extras and `@adonis-agora/*` configs (telescope,
+media, authz, durable…) — is read for **active driver selections**. Those
+packages consume named Lucid/Redis/Drive connections instead of env vars, so
+the selection is the only evidence there is:
+
+| Pattern | Signal |
+| --- | --- |
+| `store: 'lucid'`, `default: 'lucid'`, `active: 'lucid'` | the configured database (postgres or mysql, per step 2) |
+| `store: 'redis'` / `default: 'redis'` / `transports.redis(` / `admissions.redis(` / `bullmq` | redis |
+| `disks.s3(` / `services.s3(` / `disk: 's3'` | minio |
+
+Selections that are *defined but not active* become notes, not evidence — sail
+will not provision a container nobody selected. A `stores.lucid(` / `stores.redis(`
+that is defined while another store is active, a `store: 'memory'` in a config
+that also knows `lucid`, a `lucid` selection with no pg/mysql connection
+configured, or a `lucid` selection on SQLite each produce a note telling you
+exactly what to flip and to re-run install.
+
+<Callout type="info">
+**Commented-out code never counts.** Every file is stripped of block and `//`
+comments first, by a quote-aware scanner that spares `//` inside strings and
+the `://` of URLs. The Agora stubs document alternatives in comments
+(`// lucid: storage.lucid(…)`), sometimes trailing after real code — unstripped,
+one of those would read as an active selection and provision the wrong service.
+</Callout>
+
+### 5. `start/env.ts` and loose env reads
+
+A `DRIVE_DISK` declaration whose enum admits `'s3'` is minio evidence
+(`via: 'env'`). And a bare read of `REDIS_HOST` / `REDIS_PORT` anywhere in the
+scanned configs implies redis, `SMTP_HOST` / `SMTP_PORT` implies mailpit,
+`AWS_ACCESS_KEY_ID` / `S3_BUCKET` / `S3_ENDPOINT` implies minio — which is how
+hand-rolled clients (a raw `ioredis` instance, say) still get a container.
+
+### 6. Vetoes and the pg/mysql tie-break
+
+A **dependency contradicted by its own config** is dropped, with a note, instead
+of provisioning an idle container: `pg` installed while `config/database.ts` is
+on `better-sqlite3` gives *"package.json lists pg but config/database.ts uses
+sqlite — skipping postgres"*; a `config/drive.ts` with no s3 disk skips minio; a
+`config/mail.ts` with no smtp mailer skips mailpit. The veto only removes
+dependency-only evidence — config and env evidence always survive it — and it
+never applies when the owning config file is absent.
+
+Postgres and MySQL are then made mutually exclusive: when both survive, the
+client in `config/database.ts` wins, and with no config **postgres wins by
+default**, with a note telling you to pass `--services` to override.
+
+## What `sail:install` writes
+
+Everything below is append-only and safe to re-run: hand edits, tuned ports and
+real passwords are never overwritten.
+
+### `compose.yml`
+
+Created with the selected services, or — when the file already exists —
+**merged**: only missing services are appended, with their named volumes.
+Existing blocks, hand edits included, stay byte-identical. Published ports
+interpolate `${SAIL_POSTGRES_PORT:-5432}`-style defaults so the committed file
+is identical in every worktree and on every machine — see
+[Worktrees](/docs/sail/worktrees) for the runtime offsets and
+[Services](/docs/sail/services) for the catalogue and compose anatomy.
+
+### `start/env.ts`
+
+Keys that a selected service needs, that the file does not declare yet, and
+that have a stock first-party shape go through the `defineEnvValidations`
+codemod under the comment `Variables for @adonis-agora/sail local services`:
+
+| Keys | Validation |
+| --- | --- |
+| `DB_HOST`, `REDIS_HOST`, `SMTP_HOST` | `Env.schema.string({ format: 'host' })` |
+| `DB_PORT`, `REDIS_PORT`, `SMTP_PORT` | `Env.schema.number()` |
+| `DB_PASSWORD`, `REDIS_PASSWORD` | `Env.schema.string.optional()` |
+| `DB_USER`, `DB_DATABASE`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `S3_BUCKET` | `Env.schema.string()` |
+| `S3_ENDPOINT` | `Env.schema.string({ format: 'url', tld: false })` |
+
+Keys outside that map — notably **`MAIL_MAILER`** and **`DRIVE_DISK`**, whose
+shape is an app-specific enum — are only *reported* (*"sail has no stock
+validation for these, add them by hand"*), never guessed. Install also prints a
+coverage line: keys declared, keys the configs use, keys missing.
+
+### `.env` and `.env.example`
+
+Main-checkout defaults (base ports, offset 0) are added via `defineEnvVariables`
+for keys **missing from both files** — the codemod's `add` replaces in place, so
+handing it an existing key would clobber a tuned value. `DB_PASSWORD`,
+`AWS_SECRET_ACCESS_KEY` and `REDIS_PASSWORD` are written to `.env` but omitted
+from the committed `.env.example`.
+
+```bash
+DB_HOST=127.0.0.1                   # postgres (mysql: DB_PORT=3306)
+DB_PORT=5432
+DB_USER=sail
+DB_PASSWORD=password
+DB_DATABASE=app
+REDIS_HOST=127.0.0.1                # redis
+REDIS_PORT=6379
+SMTP_HOST=127.0.0.1                 # mailpit
+SMTP_PORT=1025
+AWS_ACCESS_KEY_ID=sail              # minio
+AWS_SECRET_ACCESS_KEY=password
+AWS_REGION=us-east-1
+S3_BUCKET=local
+S3_ENDPOINT=http://localhost:9000
+```
+
+<Callout type="warn">
+These are base-port values. In a linked worktree the live ports differ:
+`sail:up` / `sail:sync-env` write the resolved ones into `.env.local` and
+`.env.test.local`, which Adonis loads over `.env`. Ask `sail:info --json`
+instead of reading ports from `.env`.
+</Callout>
+
+If the codemods are unavailable or throw, install does **not** fail — env
+wiring must never block the compose file. You get the exact hand-edit snippet
+instead, surfaced as `validationsSkipped` / `variablesSkipped` in the JSON report.
+
+### `.env.schema` (varlock only)
+
+Written only when varlock is detected — a committed `.env.schema`, or the
+`varlock` package in dependencies. Sail declares the selected services'
+connection keys inside `# sail:schema:start` / `# sail:schema:end` markers,
+appending only keys not already declared anywhere in the file: your types and
+docs always win. Details in [Varlock](/docs/sail/varlock).
+
+### `AGENTS.md`
+
+A section wrapped in `<!-- sail:start -->` / `<!-- sail:end -->` markers is
+created, appended, or replaced in place — running install twice produces a
+byte-identical file. It stays deliberately generic (no worktree names, no
+concrete ports), because the file is committed and shared, and points agents at
+`sail:info --json` for live values. See [Agents](/docs/sail/agents).
+
+## Output
+
+A human run prints the compose action, the full scan, the per-artefact actions,
+the notes, the resolved stack info, and `Next: node ace sail:up`.
+
+```
+compose.yml created with postgres, redis — /app/compose.yml
+CONFIG SCAN (start/env.ts + config/*.ts)
+  postgres — package.json:pg, database.ts:pg client, telescope.ts:lucid store selected (pg)
+  start/env.ts declares 12 keys, configs use 14, missing: DB_HOST, DB_PORT
+```
+
+With `--json` (implicit inside an agent) the whole run is one object:
+
+```json
+{
+  "composeFile": "/app/compose.yml",
+  "compose": "created with postgres, redis",
+  "services": ["postgres", "redis"],
+  "detection": [
+    { "service": "postgres", "via": "dependency", "detail": "package.json:pg" },
+    { "service": "redis", "via": "config", "detail": "redis.ts:redis config" }
+  ],
+  "projectName": "myapp-feature-login",
+  "portOffset": 317,
+  "agentsMd": "created",
+  "varlock": "skipped (no varlock detected)",
+  "env": { "validations": ["DB_HOST", "DB_PORT"], "variables": ["DB_HOST", "DB_PORT"] },
+  "notes": []
+}
+```
+
+`compose` is one of `created with …`, `updated (added …)` or `already up to
+date`; `agentsMd` and `varlock` report `created` / `updated` / `unchanged`
+(varlock also `skipped (no varlock detected)`). `notes` carries every scan hint
+plus, whenever minio is selected, the one step sail refuses to do for you:
+*"add `endpoint: env.get('S3_ENDPOINT')` to the s3 disk in config/drive.ts and
+create the 'local' bucket in the MinIO console"* — the stock drive stub has no
+endpoint variable.
+
+## When nothing is detected
+
+Without a TTY — or inside an AI agent, where sail never prompts — the command
+exits `1` with:
+
+```
+Could not detect any service from package.json or config/*.ts
+Re-run with explicit services, e.g. node ace sail:install --services=postgres --services=redis (valid: postgres, mysql, redis, mailpit, minio)
+```
+
+In JSON mode the same pair is emitted as `{ "error": …, "hint": … }`.
+Aborting the interactive prompt produces the equivalent failure; selecting
+nothing exits cleanly with *"No services selected — nothing to do."*
+
+## Re-running and adding a service later
+
+Just run it again — there is nothing to undo first:
+
+```bash
+node ace sail:install                      # re-detect after installing a package
+node ace sail:install --services=minio     # add one explicitly
+```
+
+Re-running merges the new service into `compose.yml`, appends only the still
+missing env keys and validations, refreshes the `AGENTS.md` block in place, and
+touches nothing else; when nothing is missing it prints `already up to date` /
+`unchanged` across the board.
+
+<Callout type="info">
+`--services` replaces the selection for that run but never subtracts: services
+already in `compose.yml` stay. Remove one by deleting its block from
+`compose.yml` (run `sail:down --volumes` first if you want its data gone).
+</Callout>
+
+Next: [Commands](/docs/sail/commands) for the everyday workflow, or
+[Troubleshooting](/docs/sail/troubleshooting) when a service you did not expect
+gets detected.

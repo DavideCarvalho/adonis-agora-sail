@@ -51,8 +51,8 @@ export default class SailExec extends SailBaseCommand {
       this.failJsonAware(
         `sail:exec failed (exit ${result.exitCode}):\n${this.tailLines(result.stderr || result.stdout)}`,
         'Check the service name with `node ace sail:ps`',
+        result.exitCode,
       );
-      this.exitCode = result.exitCode;
     }
   }
 }

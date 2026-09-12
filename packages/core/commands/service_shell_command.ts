@@ -45,7 +45,7 @@ export abstract class SailServiceShellCommand extends SailBaseCommand {
       if (this.wantsJson) {
         this.failJsonAware(
           `Cannot open an interactive ${this.shellService} shell with --json output`,
-          `Pass a command instead: ${dbShellExample(this.shellService)} --json`,
+          `Pass a command instead: ${dbShellExample(this.shellService, { json: true })}`,
         );
         return;
       }
@@ -71,10 +71,10 @@ export abstract class SailServiceShellCommand extends SailBaseCommand {
     const docker = await this.docker();
     const result = await docker.exec(this.shellService, argv);
     if (result.exitCode !== 0) {
-      this.exitCode = result.exitCode;
       this.failJsonAware(
         `${this.commandName} failed (exit ${result.exitCode}):\n${this.tailLines(result.stderr || result.stdout)}`,
         'Check the service is up with `node ace sail:ps`',
+        result.exitCode,
       );
       return;
     }

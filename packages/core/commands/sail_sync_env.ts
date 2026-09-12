@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import type { CommandOptions } from '@adonisjs/core/types/ace';
 
-import { syncSailLocalEnvs } from '../src/dotenv.js';
+import { encryptedEnvWarning, syncSailLocalEnvs } from '../src/dotenv.js';
 import { resolveStackInfo } from '../src/info.js';
 import { detectVarlock } from '../src/varlock.js';
 import { SailBaseCommand } from './sail_base_command.js';
@@ -40,6 +40,12 @@ export default class SailSyncEnv extends SailBaseCommand {
     const encrypted = result.files.filter((file) => file.action === 'skipped-encrypted');
     const synced = result.files.filter((file) => file.action !== 'skipped-encrypted');
 
+    // A skipped file means the sync did not happen, in either output mode:
+    // set the code before the JSON path returns, so agents and humans agree.
+    if (encrypted.length > 0) {
+      this.exitCode = 1;
+    }
+
     if (this.wantsJson) {
       this.printJson({
         status: 'synced',
@@ -57,10 +63,7 @@ export default class SailSyncEnv extends SailBaseCommand {
       );
     }
     for (const file of encrypted) {
-      this.exitCode = 1;
-      this.logger.warning(
-        `${file.file} looks encrypted — ports NOT synced there, set them from \`node ace sail:info --env\` through your secret manager instead`,
-      );
+      this.logger.warning(encryptedEnvWarning(file.file));
     }
     if (synced.length > 0) {
       this.logger.info(

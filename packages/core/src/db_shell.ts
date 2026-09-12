@@ -28,15 +28,18 @@ export function dbShellCommand(service: DbShellService, extraArgs: string[] = []
 
 /**
  * The non-interactive equivalent, shown when there is no TTY to open the
- * REPL in (agents, CI) — the exact re-run that works there.
+ * REPL in (agents, CI) — the exact re-run that works there. Ace flags go
+ * *before* the `--` separator: everything after it is handed to the client,
+ * so a trailing `--json` would reach `psql` instead of ace.
  */
-export function dbShellExample(service: DbShellService): string {
+export function dbShellExample(service: DbShellService, options: { json?: boolean } = {}): string {
+  const flag = options.json ? ' --json' : '';
   switch (service) {
     case 'postgres':
-      return `node ace sail:psql -- -c 'select 1'`;
+      return `node ace sail:psql${flag} -- -c 'select 1'`;
     case 'mysql':
-      return `node ace sail:mysql -- -e 'show tables'`;
+      return `node ace sail:mysql${flag} -- -e 'show tables'`;
     case 'redis':
-      return `node ace sail:redis -- ping`;
+      return `node ace sail:redis${flag} -- ping`;
   }
 }

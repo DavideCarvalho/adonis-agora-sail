@@ -1,0 +1,174 @@
+---
+title: Sharing
+description: sail:share puts the worktree's running app behind a public *.trycloudflare.com URL via a cloudflared quick tunnel — for webhook callbacks, device testing and previews.
+icon: Share2
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+```bash
+node ace sail:share
+```
+
+`sail:share` starts a **cloudflared quick tunnel** pointed at the port your
+app already serves on, and prints a public
+`https://<label>.trycloudflare.com` URL that anyone (or any webhook provider)
+on the internet can reach. No Cloudflare account, no DNS, no config file: the
+label is assigned by Cloudflare for the lifetime of the process and is gone
+the moment you stop it.
+
+No Docker is involved. The app runs on the host under `node ace serve --hmr`;
+sail only spawns `cloudflared tunnel --url http://127.0.0.1:<port>` next to
+it. The stack started by [`sail:up`](/docs/sail/commands) is irrelevant here —
+you can share an app whose services are not even running.
+
+## Requirements
+
+The `cloudflared` binary must be on `PATH`. Sail probes it with
+`cloudflared --version` before doing anything else, and fails immediately when
+the probe throws:
+
+```text
+cloudflared is not installed or not on PATH. Install cloudflared (`brew install cloudflare/cloudflare/cloudflared`, or `npm i -D cloudflared`) and re-run
+```
+
+Under `--json` the same text arrives as `{ "error": "…" }`. Either install
+route works — the Homebrew tap ships a native binary, the `cloudflared` npm
+package downloads one into `node_modules/.bin` (which `node ace` already has
+on `PATH` when run through your package manager's scripts).
+
+## How the local port is resolved
+
+`sail:share` deliberately takes no port argument in the common case: it
+reproduces exactly what `serve` does, so the tunnel lands on the port the app
+is already listening on.
+
+1. **`--port` wins.** When given, nothing else is consulted — no dot-env read,
+   no worktree offset.
+2. **Dot-env `PORT`, in Adonis loader priority.** The first file that declares
+   a usable `PORT` decides, and later files are not read:
+   `.env.<NODE_ENV>.local`, then `.env.local` (skipped when `NODE_ENV` is
+   `test` or `testing`, matching the loader), then `.env.<NODE_ENV>`, then
+   `.env`. Within a single file the **last** `PORT` wins, `export` prefixes and
+   quotes are tolerated, and non-integer or out-of-range values (`PORT=abc`,
+   `PORT=99999`, empty) are ignored.
+3. **Fallback `3333`** when no file declares one.
+4. **Plus the worktree offset** — `sha1(worktreeName) % 1000`, the same
+   deterministic shift every sail port uses (see
+   [Worktrees](/docs/sail/worktrees)). In the main checkout the offset is `0`.
+
+So in a worktree named `feature-login` with `PORT=3333`, the target is
+`3333 + offset`, exactly where `@adonisjs/core`'s worktree-aware `serve`
+binds.
+
+### The base-port fallback
+
+Worktree-aware `serve` is a recent addition to `@adonisjs/core`. On a core
+without that patch — or with a manual override — `serve` binds plain `PORT`
+even inside a worktree, and the offset port stays closed. Sail probes both
+before opening the tunnel:
+
+- the worktree port answers → share it;
+- only the base `PORT` answers (and the offset is non-zero) → share the base
+  port and say so:
+
+```text
+worktree port :4103 is closed but base PORT :3335 answers — sharing :3335 (core worktree-port not active?)
+```
+
+- nothing answers → the worktree port is still the target, with a warning, and
+  the tunnel opens anyway (the app may boot after the tunnel):
+
+```text
+Nothing is listening on :4103 — start the app first (e.g. `node ace serve --hmr`), then re-run (continuing anyway — the app may still be booting)
+```
+
+The base port is never preferred in the main checkout: with an offset of `0`
+there is nothing to fall back to.
+
+## Flags
+
+| Flag | Alias | Effect |
+| --- | --- | --- |
+| `--port <n>` | `-p` | Local port to expose. Overrides the dot-env resolution *and* the worktree offset. |
+| `--json` | — | Machine-readable output. Defaults to **on** inside an AI coding agent (see [Agents](/docs/sail/agents)); pass `--json=false` to force the human path. |
+
+## Lifecycle
+
+`sail:share` stays **attached** for as long as the tunnel should live. The
+tunnel is the process: there is no daemon, no `sail:share --stop`, nothing to
+clean up afterwards.
+
+```bash
+node ace sail:share
+# Sharing http://127.0.0.1:4103 publicly (Ctrl+C to stop)…
+# …cloudflared's own output, including the https://<label>.trycloudflare.com line
+```
+
+In the human path `cloudflared`'s stdio is inherited, so you get its native
+colors and its own URL banner. **Ctrl+C** stops the tunnel; the child's exit
+code becomes the command's exit code.
+
+Under `--json`, stdio is piped instead, `SIGINT`/`SIGTERM` are forwarded to
+`cloudflared`, and the command keeps running after printing the URL — kill it
+to stop sharing.
+
+## JSON output
+
+With `--json`, **stdout carries JSON and nothing else**; every line
+`cloudflared` writes (on either of its streams) is forwarded to **stderr**.
+Once the tunnel registers, sail prints:
+
+```json
+{
+  "url": "https://bright-dog-123.trycloudflare.com",
+  "local": "http://127.0.0.1:4103",
+  "port": 4103,
+  "basePort": 3335,
+  "portOffset": 768,
+  "resolvedFrom": "worktree"
+}
+```
+
+`resolvedFrom` is `worktree` (the offset port answered), `base-fallback` (the
+base port answered instead) or `unverified` (nothing answered yet). The
+preflight explanations ride along in the same object rather than as separate
+documents: `notice` carries the base-port fallback message, `warning` the
+"nothing is listening on :port" one. Stdout stays exactly one JSON document,
+so a consumer can parse it in one go.
+
+If `cloudflared` produces no URL within **60 seconds**, sail kills it and
+fails:
+
+```text
+cloudflared did not print a tunnel URL in time
+```
+
+with the hint `Check your network and re-run (tunnel logs above, on stderr)`
+and exit code `1`. The tunnel logs already on stderr are the diagnosis.
+
+## What it is for
+
+- **Webhook integrations** — the main use case. Payment providers, git
+  forges and messaging platforms need to POST *into* your machine; point their
+  dev webhook at the `trycloudflare.com` URL and iterate against real
+  payloads with HMR still live.
+- **Mobile and device testing** — open the URL on a phone, a tablet or a VM
+  without putting anything on the LAN or fighting with certificates; the
+  tunnel terminates TLS for you.
+- **Sharing a preview** — hand a designer or a PM a link to the branch you
+  are working on, straight from the worktree, without a deploy.
+
+<Callout type="warn">
+The tunnel publishes your **local development app** on the public internet.
+The URL is unguessable, but it is not authentication: anyone who obtains it
+(a link preview bot, a pasted Slack message, a webhook provider's log) reaches
+your app with whatever seeded data, debug routes and relaxed dev settings it
+has. Share deliberately, keep the session short, and stop it (Ctrl+C) when you
+are done — quick tunnels have no access controls, no logs you own, and the
+label is recycled once the process exits.
+</Callout>
+
+Failures specific to the tunnel — missing binary, no URL in time, nothing
+listening — are catalogued in
+[Troubleshooting](/docs/sail/troubleshooting).

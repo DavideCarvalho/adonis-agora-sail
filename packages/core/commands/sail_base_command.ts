@@ -69,8 +69,14 @@ export abstract class SailBaseCommand extends BaseCommand {
     return lines.slice(-max).join('\n');
   }
 
-  protected failJsonAware(message: string, hint?: string) {
-    this.exitCode = 1;
+  /**
+   * Fails the command: sets the exit code and reports the message either as
+   * `{ error, hint }` JSON or as human log lines. `exitCode` propagates a
+   * child's own code (docker, an in-container client); it falls back to `1`
+   * for a code that would otherwise read as success.
+   */
+  protected failJsonAware(message: string, hint?: string, exitCode = 1) {
+    this.exitCode = exitCode === 0 ? 1 : exitCode;
     if (this.wantsJson) {
       this.printJson({ error: message, ...(hint ? { hint } : {}) });
       return;

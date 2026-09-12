@@ -107,7 +107,9 @@ projects are never touched.
   patch serves plain `PORT` even in a worktree), it shares the base port
   instead and says so. Use it for previews and webhook integrations
   (payments providers calling back into your machine). It stays attached
-  until interrupted; with `--json` it prints one `{ url, local }` line on
+  until interrupted; with `--json` it prints exactly one JSON document
+  (`{ url, local, port, basePort, portOffset, resolvedFrom }`, plus
+  `notice` / `warning` when the port resolution needed explaining) on
   stdout, keeps tunnel logs on stderr, and keeps running — kill the command
   to stop sharing. No docker involved.
 

@@ -1,0 +1,311 @@
+---
+title: Troubleshooting
+description: Every failure sail can emit — the literal message, what triggered it, and the fix — grouped by Docker, ports and worktrees, env files, service shells, install detection and tunnels.
+icon: LifeBuoy
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Sail fails loud and with a hint. Every message below is emitted verbatim by a
+command; under `--json` (the default inside an AI agent) the same content
+arrives as `{ "error": "…", "hint": "…" }`. The exit code is `1` for a
+sail-level failure and the child's own code when a child process is what
+failed (see [Commands](/docs/sail/commands)).
+
+## Docker and the stack
+
+### docker is missing or unusable
+
+```text
+docker is not installed or not on PATH
+docker compose is not usable: <docker's stderr>
+```
+
+Hint: `Install Docker (or start the daemon) and try again`. Both come from the
+`ensureDocker` preflight every stack command runs. The first means spawning
+`docker` threw `ENOENT` — fix `PATH` for the shell running `node ace`. The
+second means `docker compose version --short` ran and exited non-zero: the
+daemon is down, or the **compose v2 plugin** is missing. Sail always shells out
+to `docker compose`, never the legacy `docker-compose`.
+
+### No compose file
+
+```text
+No compose file found at /path/to/app/compose.yml
+```
+
+Hint: `Run "node ace sail:install" first to generate it`. Checked by every
+command that touches containers (`up`, `down`, `ps`, `logs`, `exec` and the
+service shells) — not by `install`, `info`, `sync-env`, `prune` or `share`.
+The path is the **app root**, so a `cd` into a subdirectory is never the cause;
+a missing or renamed `compose.yml` is. See [Install](/docs/sail/install).
+
+### The stack will not come up
+
+```text
+sail:up failed:
+<last 8 non-blank lines of docker's output>
+```
+
+Hint: ``Is the Docker daemon running? See `node ace sail:logs` for service
+output``. `sail:up` runs `docker compose up --detach --wait --remove-orphans`,
+so this also fires on a **healthcheck timeout**: the container started but
+never became healthy — a corrupted volume, a Postgres data directory from an
+older major after an image bump, an OOM kill. The tail is the cause; the full
+story is `node ace sail:logs <service>`.
+
+### down / logs / ps / prune failures
+
+```text
+sail:down failed:
+<tail>
+
+Could not read logs:
+<tail>
+
+Could not list containers: docker compose ps failed: <stderr>
+
+Could not list compose projects: docker compose ls failed: <stderr>
+```
+
+All four carry `Is the Docker daemon running?`; the logs one adds ``Check the
+service name with `node ace sail:ps` ``. They mean the CLI reached the daemon
+and got an error back. `sail:prune` reports per-project failures without
+aborting the rest of the run:
+
+```text
+Could not stop "myapp-feature-login":
+<tail>
+```
+
+### sail:exec
+
+```text
+No command given
+```
+
+Hint: `Usage: node ace sail:exec <service> -- <command...> (e.g. node ace
+sail:exec redis -- redis-cli ping)`. The `--` separator is required, otherwise
+ace consumes your command's flags.
+
+```text
+sail:exec failed (exit 1):
+<tail>
+```
+
+Hint: ``Check the service name with `node ace sail:ps` ``. The container
+command's own exit code is propagated. A wrong *service* name lands here too —
+compose reports "no such service" in the tail.
+
+### --follow with --json
+
+```text
+Cannot combine --follow with --json output
+```
+
+Hint: ``Stream text with `node ace sail:logs --follow`, or poll once with
+`node ace sail:logs --tail 100 --json` ``. An endless JSON stream helps nobody.
+Inside an AI agent `--json` is implicit, so a bare `sail:logs --follow` always
+hits this — poll with `--tail` / `--since` instead
+([Agents](/docs/sail/agents)).
+
+### Volume deletion aborted
+
+```text
+Aborted — containers left running, volumes kept.
+```
+
+Not an error: `sail:down --volumes` asked for confirmation on an interactive
+terminal and you declined (or the prompt threw). Outside a TTY, and inside an
+agent, the explicit flag itself counts as consent and no prompt appears.
+
+## Ports and worktrees
+
+### Another stack holds a host port
+
+```text
+Cannot start: host port(s) already in use: :5621 (held by shop-main-postgres-1), :6567
+```
+
+Hint: ``Stop the other stack (`node ace sail:down` in that worktree), pick a
+worktree with free ports, or run `node ace sail:prune` for orphans``.
+
+`sail:up` probes the host ports **before** touching Docker. Ports its own
+running containers already publish are subtracted, so re-running `up` on a
+live stack stays a silent success — what is left over belongs to someone else.
+Holder names come from `docker ps`; a port held by a non-Docker process shows
+with no `(held by …)` suffix. Without this preflight compose would start
+containers whose published ports are shadowed and the app would end up talking
+to **another worktree's database**.
+
+The probe only covers the services your `compose.yml` declares, at this
+worktree's offset — an unrelated MySQL on `3306` never blocks a postgres-only
+stack.
+
+### Worktree ports do not shift
+
+No error — this one is silent. Worktree detection needs **git ≥ 2.36**
+(`git worktree list --porcelain -z`); on older gits sail sees no worktree and
+behaves as the main checkout: bare project name, offset `0`, base ports. If
+`node ace sail:info` reports `portOffset: 0` inside a linked worktree, check
+`git --version` first. Same symptom when the app root is not in a git
+repository at all. See [Worktrees](/docs/sail/worktrees).
+
+## Env files
+
+### Nothing to sync
+
+```text
+No sail services enabled for this app
+```
+
+Hint: `Run "node ace sail:install" first to generate compose.yml`. From
+`sail:info` and `sail:sync-env` when the resolved stack has zero services — no
+compose file, or one declaring nothing sail recognises.
+
+### Encrypted .env.local
+
+```text
+.env.local looks encrypted — ports NOT synced there, set them from `node ace sail:info --env` through your secret manager instead
+```
+
+`sail:sync-env` treats it as a failure (exit code `1`, its one job could not be
+done); `sail:up` prints the same line as a warning and still exits `0`, because
+the stack did come up. Both mean the file contains `varlock(`
+ciphertext: appending a plaintext `# sail:start` block next to ciphertext would
+corrupt it, so sail skips that file. `.env.local` and `.env.test.local` are
+judged independently. Feed the values in through varlock instead — see
+[Varlock](/docs/sail/varlock).
+
+<Callout type="info">
+This skip is the only case where sail leaves ports unsynced. Everything outside
+the `# sail:start` / `# sail:end` markers is always preserved, so a plaintext
+file with hand-written entries is safe to sync repeatedly.
+</Callout>
+
+## Service shells
+
+All three messages interpolate the service, so `sail:mysql` and `sail:redis`
+produce the same text with their own names and examples.
+
+```text
+The postgres service is not enabled
+```
+
+Hint: `Run "node ace sail:install --services=postgres" first`. The shells
+refuse services the compose file does not declare instead of failing deep
+inside `docker compose exec`.
+
+```text
+Cannot open an interactive postgres shell with --json output
+```
+
+Hint: `Pass a command instead: node ace sail:psql --json -- -c 'select 1'`. A
+REPL cannot be machine-readable, and inside an agent `--json` is implicit — so
+a bare `sail:psql` always lands here. The one-shot form is the agent path. Note
+where the flag sits: everything after `--` is handed to the client, so ace
+flags belong before the separator.
+
+```text
+No interactive terminal — cannot open a postgres shell
+```
+
+Hint: `Pass a command instead: node ace sail:psql -- -c 'select 1'`. Raised in
+CI, under a pipe, or anywhere `process.stdin.isTTY` is not `true`: sail prints
+the exact re-run rather than hanging on a REPL nobody can type into.
+
+```text
+sail:psql failed (exit 1):
+<tail>
+```
+
+Hint: ``Check the service is up with `node ace sail:ps` ``. The command exits
+with the client's own code, so a failing query fails your script with the
+status the query produced, and the tail keeps a SQL error distinguishable from
+a dead container. See [Services](/docs/sail/services).
+
+## Install detection
+
+### Nothing detected
+
+```text
+Could not detect any service from package.json or config/*.ts
+```
+
+Hint: `Re-run with explicit services, e.g. node ace sail:install
+--services=postgres --services=redis (valid: postgres, mysql, redis, mailpit,
+minio)`. The scan found no evidence **and** the session cannot prompt (no TTY,
+or an AI agent). On an interactive terminal you get a multi-select instead:
+picking nothing prints `No services selected — nothing to do.` and exits
+cleanly, while an aborted prompt fails with `Service selection was aborted`
+plus the same re-run hint.
+
+### Unknown service name
+
+```text
+Unknown service(s): postgresql
+```
+
+Hint: `Valid services: postgres, mysql, redis, mailpit, minio`. `--services` is
+validated before anything is written.
+
+### Codemods could not edit the app
+
+```text
+codemods unavailable — add to start/env.ts by hand: DB_HOST: Env.schema.string({ format: 'host' }); …
+could not edit start/env.ts — add by hand: …
+could not edit .env — add by hand: …
+```
+
+Env wiring never blocks the compose file. When `createCodemods()` or an
+individual codemod throws (an unparseable `start/env.ts`, a read-only file),
+`sail:install` degrades to printing the exact snippet to paste — the compose
+file and the rest of the install already succeeded.
+
+### MinIO needs one manual step
+
+```text
+MinIO: add `endpoint: env.get('S3_ENDPOINT')` to the s3 disk in config/drive.ts and create the 'local' bucket in the MinIO console
+```
+
+A note, not a failure, printed whenever minio is selected: stock `drive.stub`
+has no endpoint variable, so the passthrough cannot be generated safely.
+
+## Tunnels
+
+### cloudflared missing
+
+```text
+cloudflared is not installed or not on PATH. Install cloudflared (`brew install cloudflare/cloudflare/cloudflared`, or `npm i -D cloudflared`) and re-run
+```
+
+`sail:share` probes `cloudflared --version` before anything else. See
+[Sharing](/docs/sail/sharing).
+
+### No tunnel URL in time
+
+```text
+cloudflared did not print a tunnel URL in time
+```
+
+Hint: `Check your network and re-run (tunnel logs above, on stderr)`. Only in
+`--json` mode, after **60 seconds** with no `*.trycloudflare.com` URL in the
+tunnel output; the child is killed and the command exits `1`. Usually egress
+filtering or a captive portal — cloudflared's own logs, already on stderr, say
+which.
+
+### Nothing listening, or the wrong port shared
+
+```text
+Nothing is listening on :4103 — start the app first (e.g. `node ace serve --hmr`), then re-run (continuing anyway — the app may still be booting)
+```
+
+```text
+worktree port :4103 is closed but base PORT :3335 answers — sharing :3335 (core worktree-port not active?)
+```
+
+Both are informational and the tunnel opens anyway. The first means the app
+had not bound the port yet (if the public URL 502s, this was why). The second
+means the worktree's offset port is closed while plain `PORT` answers — what an
+`@adonisjs/core` without the worktree-port patch does inside a worktree — so
+sail shares the port that actually serves.

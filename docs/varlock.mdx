@@ -1,0 +1,338 @@
+---
+title: Varlock
+description: How sail detects varlock, what it appends to .env.schema (typed, tagged, @public connection coordinates), and how the per-worktree port sync stays compatible with `varlock run --` and encrypted env files.
+icon: ShieldCheck
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+[Varlock](https://varlock.dev) replaces the loose `.env` convention with a declared, validated
+`.env.schema`: every variable is an item with decorators (`@type`, `@required`, `@sensitive`,
+`@public`, …), and `varlock run -- <cmd>` resolves, validates and injects the result into the child
+process. Sail's integration is **opt-in by detection** — it never installs varlock, never edits your
+boot command, and does nothing at all in apps that don't use it.
+
+## Detection
+
+Two signals, checked at the app root on every `sail:install`, `sail:sync-env` and `sail:info` run:
+
+| Signal | `via` | `schemaPath` |
+| --- | --- | --- |
+| `.env.schema` exists and is readable | `'schema'` | absolute path to the file |
+| `varlock` in `dependencies` or `devDependencies` of `package.json` | `'dependency'` | `null` |
+| neither | `null` | `null` |
+
+The schema signal wins when both are present. The dependency signal exists for teams mid-migration
+who added the package but have not written a schema yet — sail will create one for them. Nothing
+else counts: no lockfile scan, no `varlock.config`, no env var. Both reads are failure-tolerant; an
+unreadable `package.json` or a missing schema simply means "not detected", never a crash.
+
+```ts
+import { detectVarlock } from '@adonis-agora/sail'
+
+const detection = await detectVarlock(app.appRoot)
+// { inUse: true, via: 'schema', schemaPath: '/app/.env.schema' }
+```
+
+`sail:info --json` and `sail:sync-env --json` carry the whole `VarlockDetection` object in their
+payload — that is how agents decide whether to prefix commands with `varlock run --`.
+
+What changes when `inUse` is true:
+
+- [`sail:install`](/docs/sail/install) additionally writes the service connection keys into
+  `.env.schema` (creating the file when it doesn't exist, even if detection came from the dependency
+  alone).
+- `sail:info` and `sail:sync-env` end with a "boot with `varlock run -- node ace serve --hmr`" hint
+  instead of the plain "just boot the app" one.
+
+Everything else — compose generation, port offsets, `.env`/`.env.example` defaults, `start/env.ts`
+validations, the `AGENTS.md` section — is identical either way.
+
+## What `sail:install` writes
+
+Install appends one item per connection key of each enabled service, wrapped in a marker block:
+
+```ini
+# sail:schema:start
+# Managed by @adonis-agora/sail (`node ace sail:install`). Values below are
+# main-checkout defaults; live per-worktree ports are written to .env.local.
+# postgres — PostgreSQL 17 database
+# @tag(sail)
+# @public
+DB_HOST=127.0.0.1
+# @tag(sail)
+# @public
+# @type=number
+DB_PORT=5432
+# @tag(sail)
+# @public
+DB_USER=sail
+# @tag(sail)
+DB_PASSWORD=password
+# @tag(sail)
+# @public
+DB_DATABASE=app
+# redis — Redis 7 cache / queue store
+# @tag(sail)
+# @public
+REDIS_HOST=127.0.0.1
+# @tag(sail)
+# @public
+# @type=number
+REDIS_PORT=6379
+# sail:schema:end
+```
+
+The markers are exactly `# sail:schema:start` and `# sail:schema:end` (distinct from the
+`# sail:start` / `# sail:end` pair used in `.env.local`). When the schema is created from scratch
+the block is preceded by a two-line file header and by a root section — the audit patterns below,
+closed by a `# ---` divider. The per-service comment (`# postgres — …`) is
+emitted only with the service's **first** key, so an append that skips that key has no header.
+
+Decorators sail emits, and nothing more:
+
+- `@tag(sail)` on every item — the machine-readable marker of sail ownership. Useful for
+  `varlock` tooling filters and for spotting what you can delete when you drop sail.
+- `@type=number` on every key ending in `_PORT`, so a typo'd port fails validation instead of
+  reaching the driver as a string.
+- `@public` on everything that is *not* a credential. A key is treated as a credential when its name
+  matches `PASSWORD`, `SECRET` or `_KEY` — that is `DB_PASSWORD`, `AWS_ACCESS_KEY_ID` and
+  `AWS_SECRET_ACCESS_KEY` today. Those items get no `@public`, so they keep the schema's default
+  sensitivity.
+
+Everything else is a **connection coordinate**: hosts, ports, database and user names, buckets,
+regions, endpoints. They are loopback dev addresses, not secrets.
+
+<Callout type="warn">
+`@public` here is a usability fix, not a security decision. Varlock redacts the values of sensitive
+items wherever they appear in log output — if `DB_HOST=127.0.0.1` were sensitive, every
+`127.0.0.1` printed by Adonis, your logger or a stack trace would come out as `lo▒▒▒▒▒`, and a
+readable dev console is worth more than hiding an address that is literally in the committed
+compose file. Credentials stay out of `@public` regardless of how fake the dev password looks.
+</Callout>
+
+Defaults in the schema are always the **main-checkout** ports (offset 0: `5432`, `6379`, `1025`,
+`9000`, …), never the current worktree's. That keeps the committed schema identical for everyone;
+live per-worktree ports are an override written to `.env.local` (see below and
+[Worktrees](/docs/sail/worktrees)).
+
+The full key set per service:
+
+| Service | Keys written |
+| --- | --- |
+| postgres / mysql | `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_DATABASE` |
+| redis | `REDIS_HOST`, `REDIS_PORT` |
+| mailpit | `SMTP_HOST`, `SMTP_PORT` |
+| minio | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `S3_BUCKET`, `S3_ENDPOINT` |
+
+## Append-only, always
+
+Sail reads the keys already declared in the file — any line matching `KEY=` at the start of a line —
+and appends **only the ones that are missing**. It never rewrites, reorders or re-decorates an
+existing item: your `@required`, your `@type`, your docs comment and your value all win.
+
+Before, a schema where the team already pinned the host:
+
+```ini
+# @required
+# @type=string
+DB_HOST=db.internal
+```
+
+After `node ace sail:install --services=postgres`:
+
+```ini
+# @required
+# @type=string
+DB_HOST=db.internal
+
+# sail:schema:start
+# @tag(sail)
+# @public
+# @type=number
+DB_PORT=5432
+# @tag(sail)
+# @public
+DB_USER=sail
+# @tag(sail)
+DB_PASSWORD=password
+# @tag(sail)
+# @public
+DB_DATABASE=app
+# sail:schema:end
+```
+
+`DB_HOST` is untouched and not duplicated; the marker block is created at the end of the file
+because there was none. A later run that enables a new service inserts the new items **inside** the
+existing block (just before `# sail:schema:end`) rather than opening a second one — there is always
+at most one sail block. Install reports what it did on stdout and in `--json`:
+`created (declares …)`, `updated (added …; added varlock audit patterns)`, `unchanged`, or
+`skipped (no varlock detected)`. When every key is already declared and the audit patterns are in
+place the file is not even written, so re-running install is a true no-op.
+
+## Audit patterns for `varlock audit`
+
+`varlock audit` scans your source for env references and reports the schema keys nothing reads. Its
+built-in patterns only recognize bare identifiers — `process.env.DB_HOST`, `import.meta.env.X`,
+`os.environ["X"]`. An Adonis app writes none of those: config and app code go through
+`env.get('DB_HOST')`, and the keys the framework itself reads (`HOST`, `PORT`, `LOG_LEVEL`) appear
+only as declarations in `start/env.ts`. Unpatched, the audit reports every key in the schema as
+unused — including the ones sail just wrote.
+
+[`@auditExtraPatterns()`](https://varlock.dev/reference/root-decorators/#auditextrapatterns) is the
+escape hatch for exactly that: project-specific regexes whose **first capture group is the env key**.
+Sail declares the two Adonis idioms, one call each (calls merge additively, so a line per idiom keeps
+each comment next to what it covers):
+
+```ini
+# env.get('KEY') / env.get("KEY") — how config/*.ts and app code read env
+# @auditExtraPatterns(regex('env\.get\(\s*\'([A-Z][A-Z0-9_]*)\''), regex('env\.get\(\s*"([A-Z][A-Z0-9_]*)"'))
+# KEY: Env.schema.…() — start/env.ts declarations, for keys only the framework reads
+# @auditExtraPatterns(regex('([A-Z][A-Z0-9_]*)\s*:\s*Env\.schema\.'))
+# ---
+```
+
+Why they look like that:
+
+- Each quote style gets its own regex — one pattern can't hold both without a backreference, and the
+  scanner reads string contents as written.
+- `regex('...')` rather than a bare `/.../` literal: a bare decorator arg cannot contain spaces,
+  commas or parens, so a realistic pattern would not survive parsing. The `\'` is how a single quote
+  is escaped inside a single-quoted arg.
+- No `fileTypes=[...]`. Omitting it applies the patterns to every extension the scanner already
+  reads, `.ts` and `.js` included; naming extensions would only be needed for file types it skips
+  (`tf`, `yaml`).
+- No `^` / `$` anchors — the scan runs without the `m` flag, so they would only ever match at the
+  edges of a whole file.
+- The `env.get(` patterns stop before the closing paren, so `env.get('DB_PORT', 5432)` matches too.
+
+These are **root** decorators, so they must sit above the `# ---` divider that separates the schema's
+root section from its items: a decorator below it attaches to the item that follows. That is the only
+thing constraining install here, and it gives three behaviours:
+
+| Schema state | What `sail:install` does |
+| --- | --- |
+| missing or empty | creates it: file header, the two decorator lines, `# ---`, then the managed item block |
+| has a `# ---` divider, no `@auditExtraPatterns` | inserts the four lines immediately above the divider |
+| already declares `@auditExtraPatterns` anywhere — sail's or yours | nothing at all: no second copy, no merging into your call |
+| has neither divider nor decorator | writes nothing; reports the lines as a note |
+
+The check is the literal string `@auditExtraPatterns` anywhere in the file, so a hand-written call —
+for your own `configService.get('KEY')` wrapper, say — makes sail keep its hands off permanently.
+Adding the Adonis idioms to that call is then yours to do.
+
+### When the schema has no divider
+
+A schema with no `# ---` is valid: every line is an item and the root section is empty. Sail will not
+add the divider for you, because everything above it *is* the root section — inserting one would
+silently reinterpret your file's leading comments as root decorators. So install writes nothing and
+reports the lines instead, the same way it reports `MAIL_MAILER` / `DRIVE_DISK` (on stdout, and in
+the `notes` array of `--json`):
+
+```
+note: varlock audit: .env.schema has no `# ---` root divider, so sail did not add the Adonis env
+access patterns — adding the divider itself would reinterpret your leading comments as root
+decorators. Add `# ---` above the first item, then these lines just above it: …
+```
+
+Add a `# ---` line above your first item, paste the four lines just above it, and the next
+`sail:install` sees `@auditExtraPatterns` and leaves the file alone from then on. Everything else
+about the install — the item block, the `.env` defaults, `start/env.ts` — is unaffected either way.
+
+## Port sync and `varlock run`
+
+Ports are per-worktree, so they cannot live in the committed schema. After the stack is healthy,
+[`sail:up`](/docs/sail/commands) — and `sail:sync-env` on demand — writes the resolved app env into
+a managed block of the local override files:
+
+```ini
+# sail:start
+# Managed by @adonis-agora/sail — per-worktree service ports. Do not edit;
+# re-run `node ace sail:sync-env` to refresh.
+DB_DATABASE=app
+DB_HOST=127.0.0.1
+DB_PASSWORD=password
+DB_PORT=5789
+DB_USER=sail
+REDIS_HOST=127.0.0.1
+REDIS_PORT=6736
+# sail:end
+```
+
+Two files are targeted, both created when missing and both added to `.gitignore` (exact-line match,
+so `.env.local.example` doesn't count as ignoring `.env.local`):
+
+- **`.env.local`** — the override every Adonis app loads over `.env` outside the `test` environment.
+- **`.env.test.local`** — what the loader reads under `NODE_ENV=test`, where `.env.local` is skipped.
+  Without it, `node ace test` inside a worktree would silently connect to the main checkout's
+  database.
+
+Lines are sorted `KEY=value` between the markers; everything outside them is preserved verbatim, and
+when the ports did not change the file is byte-identical and left alone (`unchanged`).
+
+This is why nothing about your boot command changes. Sail targets the same plain `.env.local` that
+non-varlock apps use — it does not write to `.env.schema` at runtime, does not run `varlock` itself,
+and does not shell out to any secret backend. `varlock run --` resolves the schema plus the usual
+dotenv cascade, picks the sail block up as an override, and injects the worktree's ports:
+
+```bash
+node ace sail:up                            # starts the stack, then syncs .env.local/.env.test.local
+varlock run -- node ace serve --hmr
+varlock run -- node ace migration:run
+node ace sail:sync-env                      # re-sync ports without touching containers
+```
+
+### Encrypted `.env.local`
+
+If the file already holds varlock ciphertext — detected by the substring `varlock(` anywhere in the
+body, as in `SECRET=varlock(local:ABC123...)` — appending plaintext next to it would corrupt the
+file. Sail refuses instead: the file is left exactly as it was, the sync is reported as
+`skipped-encrypted`, and you get a warning. Both commands print the same sentence:
+
+```
+.env.local looks encrypted — ports NOT synced there, set them from `node ace sail:info --env` through your secret manager instead
+```
+
+They differ only in severity. `sail:sync-env` exits `1` — plaintext or JSON, the one thing it was
+asked to do did not happen — while `sail:up` keeps its success exit code, because the stack did come
+up.
+
+`node ace sail:info --env` prints the same sorted `KEY=value` lines to stdout, so you can pipe them
+into whatever writes your encrypted file, or `eval` them for a one-off shell. The `.gitignore`
+entries are still ensured in this case — only the env write is skipped. Each file is judged
+independently: an encrypted `.env.local` does not stop `.env.test.local` from being synced.
+
+## Troubleshooting
+
+**Schema validation fails right after install.** The appended items carry working dev defaults, so
+failures come from interaction with your own declarations — typically a file-level default that
+makes every item required while a key is left blank in `.env`, or a pre-existing decorator on a key
+sail also wanted. Sail loses those conflicts by design: a hand-written `@type=string` on `DB_PORT`
+stays, and the synced port is validated as a string. Fix the declaration in the file; the next
+`sail:install` will not fight you, because the key already counts as present.
+
+**Keys sail reports but never writes.** `sail:install` only owns the connection keys listed above.
+Keys that select a driver rather than address a service — `MAIL_MAILER`, `DRIVE_DISK` — are reported
+as notes (`start/env.ts is missing … — sail has no stock validation for these, add them by hand`)
+and left to you, in `start/env.ts` and in `.env.schema` alike. Same for MinIO's one-time setup:
+adding `endpoint: env.get('S3_ENDPOINT')` to the s3 disk and creating the `local` bucket.
+
+**A key got appended even though it's already declared.** Sail's "already present" check matches
+`KEY=` at column 0, uppercase, digits and underscores only. An indented or lowercase declaration is
+invisible to it and the key will be appended again. Move the declaration to column 0.
+
+**The block reappears after I delete it.** Deleted items are missing items, so the next
+`sail:install` re-appends them. To drop a service for good remove it from `compose.yml`; to override
+a value, keep the item and change it — your value is preserved.
+
+**Ports in `.env.local` look stale.** Run `node ace sail:sync-env`: no containers involved, safe any
+time, and comparable against `node ace sail:info --env`.
+
+**You don't use varlock.** Then nothing above applies: `detectVarlock` returns `inUse: false`,
+`sail:install` reports `varlock schema skipped (no varlock detected)` and no `.env.schema` is ever
+created. The port sync still runs — `.env.local` and `.env.test.local` are plain dotenv files Adonis
+loads on its own, no `eval`, no wrapper command. Adopting varlock later is one `sail:install` away;
+dropping it means deleting the block between the two schema markers.
+
+See also [Install](/docs/sail/install), [Worktrees](/docs/sail/worktrees) for where the ports come
+from, and [Agents](/docs/sail/agents) for the JSON payloads carrying the detection result.

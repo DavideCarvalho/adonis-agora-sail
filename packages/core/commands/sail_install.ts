@@ -18,6 +18,7 @@ import { buildStackInfo, formatStackInfo } from '../src/info.js';
 import { isServiceName, SERVICE_NAMES, SERVICES } from '../src/services.js';
 import type { SailServiceName } from '../src/types.js';
 import {
+  AUDIT_EXTRA_PATTERNS_NOTE,
   baseAppEnv,
   detectVarlock,
   ensureSchemaSection,
@@ -107,6 +108,7 @@ export default class SailInstall extends SailBaseCommand {
     }
 
     let varlockAction = 'skipped (no varlock detected)';
+    let varlockNote: string | undefined;
     const varlock = await detectVarlock(this.app.appRoot);
     if (varlock.inUse) {
       const schemaPath = join(fileURLToPath(this.app.appRoot), SCHEMA_FILE_NAME);
@@ -117,12 +119,25 @@ export default class SailInstall extends SailBaseCommand {
         schemaPrevious = null;
       }
       const schema = ensureSchemaSection(schemaPrevious, selected);
+      const changes: string[] = [];
+      if (schema.added.length > 0) {
+        changes.push(`added ${schema.added.join(', ')}`);
+      }
+      if (schema.auditPatterns === 'inserted') {
+        changes.push('added varlock audit patterns');
+      }
       varlockAction =
         schema.content === schemaPrevious
           ? 'unchanged'
           : schemaPrevious === null
             ? `created (declares ${schema.added.join(', ')})`
-            : `updated (added ${schema.added.join(', ')})`;
+            : `updated (${changes.join('; ')})`;
+      // No `# ---` divider to insert above: sail refuses to add one (it would
+      // turn the file's leading comments into root decorators) and reports the
+      // lines instead, like MAIL_MAILER / DRIVE_DISK.
+      if (schema.auditPatterns === 'manual') {
+        varlockNote = AUDIT_EXTRA_PATTERNS_NOTE;
+      }
       if (schema.content !== schemaPrevious) {
         await writeFile(schemaPath, schema.content, 'utf8');
       }
@@ -133,6 +148,9 @@ export default class SailInstall extends SailBaseCommand {
     const notes = [...scan.notes];
     if (selected.includes('minio') && !notes.includes(MINIO_SETUP_NOTE)) {
       notes.push(MINIO_SETUP_NOTE);
+    }
+    if (varlockNote && !notes.includes(varlockNote)) {
+      notes.push(varlockNote);
     }
 
     if (this.wantsJson) {

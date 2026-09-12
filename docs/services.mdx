@@ -1,0 +1,268 @@
+---
+title: Services
+description: The five services sail can run — images, ports, credentials, healthchecks and the env keys each one owns — plus the anatomy and merge rules of the generated compose.yml.
+icon: Container
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Sail ships a fixed catalog of five services. There is no plugin API and no
+custom service registry: the catalog is a data table in the package, and
+everything else — detection, compose generation, port planning, `sail:info`
+output, `.env` wiring — is derived from it. Anything outside the catalog you
+add to `compose.yml` by hand, and sail leaves it alone.
+
+## The catalog
+
+| Service | Image | Host port(s) | Container port | Volume | Healthcheck |
+| --- | --- | --- | --- | --- | --- |
+| `postgres` | `postgres:17` | `5432` | `5432` | `sail-postgres:/var/lib/postgresql/data` | `pg_isready -U sail -d app` |
+| `mysql` | `mysql:8` | `3306` | `3306` | `sail-mysql:/var/lib/mysql` | `mysqladmin ping -h 127.0.0.1 -ppassword` |
+| `redis` | `redis:7-alpine` | `6379` | `6379` | `sail-redis:/data` | `redis-cli ping` |
+| `mailpit` | `axllent/mailpit:latest` | `1025` (smtp), `8025` (ui) | `1025`, `8025` | — | — |
+| `minio` | `minio/minio:latest` | `9000` (s3), `8900` (console) | `9000`, `8900` | `sail-minio:/data` | `mc ready local` |
+
+Every healthcheck uses `interval: 5s`, `timeout: 5s`, `retries: 10`. `sail:up`
+runs `docker compose up --detach --wait`, so the command only returns once
+those checks pass — you never need a `sleep` before `migration:run`.
+
+The host ports above are **base** ports, used as-is in the main checkout. In a
+git worktree every one of them shifts by the same deterministic offset; see
+[Worktrees](/docs/sail/worktrees).
+
+### Credentials and dashboards
+
+All services share one hard-coded development identity, Laravel Sail style —
+predictable on purpose so `sail:install` needs zero configuration:
+
+| | Value |
+| --- | --- |
+| User | `sail` |
+| Password | `password` |
+| Database / bucket | `app` (Postgres, MySQL), `local` (MinIO bucket) |
+
+<Callout type="warn">
+These credentials are for local development only. The stack binds to the host,
+so anything reachable on your machine can reach `sail:password`. Never point a
+staging or production app at a sail stack, and see
+[Sharing](/docs/sail/sharing) before exposing a port to the network.
+</Callout>
+
+Two services expose a browser UI, at the resolved (offset-aware) host port:
+
+| Dashboard | URL in the main checkout |
+| --- | --- |
+| Mailpit inbox | `http://localhost:8025` |
+| MinIO console | `http://localhost:8900` |
+
+`node ace sail:info` prints both with the current worktree's ports already
+applied, so you never compute an offset by hand.
+
+Container-side these arrive as `POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_DB`,
+`MYSQL_USER`/`MYSQL_PASSWORD`/`MYSQL_DATABASE`/`MYSQL_ROOT_PASSWORD` (root shares
+the same password) and `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD`. Redis and Mailpit
+take no environment at all — sail's Redis runs **without** auth, so no
+`REDIS_PASSWORD` is ever set.
+
+## Env keys sail owns
+
+Each service declares the app-side env keys it needs and the exact values for
+them. This is the single source of truth behind `sail:info --env`, the
+`.env`/`.env.example` defaults written by `sail:install`, the `.env.schema`
+items for varlock users, and the managed block `sail:up` / `sail:sync-env`
+write into `.env.local`.
+
+| Service | Key | Value |
+| --- | --- | --- |
+| `postgres` | `DB_HOST` | `127.0.0.1` |
+| | `DB_PORT` | `5432` + offset |
+| | `DB_USER` | `sail` |
+| | `DB_PASSWORD` | `password` |
+| | `DB_DATABASE` | `app` |
+| `mysql` | `DB_HOST` | `127.0.0.1` |
+| | `DB_PORT` | `3306` + offset |
+| | `DB_USER` | `sail` |
+| | `DB_PASSWORD` | `password` |
+| | `DB_DATABASE` | `app` |
+| `redis` | `REDIS_HOST` | `127.0.0.1` |
+| | `REDIS_PORT` | `6379` + offset |
+| `mailpit` | `SMTP_HOST` | `127.0.0.1` |
+| | `SMTP_PORT` | `1025` + offset |
+| `minio` | `AWS_ACCESS_KEY_ID` | `sail` |
+| | `AWS_SECRET_ACCESS_KEY` | `password` |
+| | `AWS_REGION` | `us-east-1` |
+| | `S3_BUCKET` | `local` |
+| | `S3_ENDPOINT` | `http://localhost:9000` (+ offset) |
+
+Hosts are always `127.0.0.1`: the app runs on the host, not in a container, so
+it talks to published ports rather than compose service names. Only these keys
+are sail's. Everything else in your `.env` — `MAIL_MAILER`, `DRIVE_DISK`,
+`SESSION_DRIVER`, app secrets — sail reports but never writes, because it has
+no stock shape to guess with.
+
+<Callout type="info">
+`postgres` and `mysql` claim the **same** `DB_*` keys. Enabling both is
+supported at the container level (two databases, two ports), but the merged
+app env only holds one `DB_PORT` — the later service in the list wins. Pick
+one as the app's database and reach the other through
+`node ace sail:mysql` / `node ace sail:psql`.
+</Callout>
+
+## The generated `compose.yml`
+
+`sail:install` writes a single `compose.yml` at the app root. With `postgres`,
+`mailpit` and `minio` selected it looks like this (Redis and MySQL follow the
+same shape):
+
+```yaml
+# Managed by @adonis-agora/sail (`node ace sail:install`).
+# Host ports interpolate `${VAR:-default}`: sail injects per-worktree ports at
+# runtime, and a bare `docker compose up` falls back to the defaults. Hand
+# edits are preserved — sail only ever appends missing services.
+services:
+  postgres:
+    image: postgres:17
+    ports:
+      - ${SAIL_POSTGRES_PORT:-5432}:5432
+    environment:
+      POSTGRES_USER: sail
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: app
+    volumes:
+      - sail-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD
+        - pg_isready
+        - -U
+        - sail
+        - -d
+        - app
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - ${SAIL_MAILPIT_SMTP_PORT:-1025}:1025
+      - ${SAIL_MAILPIT_UI_PORT:-8025}:8025
+  minio:
+    image: minio/minio:latest
+    ports:
+      - ${SAIL_MINIO_PORT:-9000}:9000
+      - ${SAIL_MINIO_CONSOLE_PORT:-8900}:8900
+    command: server /data --console-address ":8900"
+    environment:
+      MINIO_ROOT_USER: sail
+      MINIO_ROOT_PASSWORD: password
+    volumes:
+      - sail-minio:/data
+    healthcheck:
+      test:
+        - CMD
+        - mc
+        - ready
+        - local
+      interval: 5s
+      timeout: 5s
+      retries: 10
+volumes:
+  sail-postgres: null
+  sail-minio: null
+```
+
+**Port interpolation.** Every published port is
+`${SAIL_<SERVICE>_PORT:-<base>}:<container>`. Sail sets those variables — all
+seven of them (`SAIL_POSTGRES_PORT`, `SAIL_MYSQL_PORT`, `SAIL_REDIS_PORT`,
+`SAIL_MAILPIT_SMTP_PORT`, `SAIL_MAILPIT_UI_PORT`, `SAIL_MINIO_PORT`,
+`SAIL_MINIO_CONSOLE_PORT`) — in the environment of every `docker compose` call
+it makes, offset already applied; a bare `docker compose up` outside sail has
+them unset and falls back to the base ports. That is what makes the file
+**worktree-agnostic and committable**: byte-identical in every checkout, no
+`.env`-dependent ports, no per-developer diffs.
+
+**Project naming.** The file declares no `name:`. Sail passes
+`--project-name` explicitly: the sanitized app name from `package.json` in the
+main checkout (`shop`), or `<app>-<worktree slug>` inside a linked worktree
+(`shop-feature-login`). One compose file, one project per worktree, fully
+isolated containers.
+
+**Volumes.** Only stateful services get one; Mailpit deliberately has none. The
+names in the file (`sail-postgres`, …) are compose-relative — Docker prefixes
+them with the project, so the real volume is
+`shop-feature-login_sail-postgres`. Two worktrees never share data.
+
+**Networks.** None are declared. Compose creates its own `<project>_default`
+network, and since the app runs on the host, nothing needs to join it.
+
+## What re-running `sail:install` does
+
+`sail:install` is **append-only**. On an existing file it parses the YAML,
+adds the fragments for selected services that are **not already present**,
+registers any missing volume, and writes the document back:
+
+| Situation | Result |
+| --- | --- |
+| Service missing from the file | Fragment appended, reported as `added` |
+| Service already present | Untouched, even if you edited it |
+| Hand-written service of your own | Untouched |
+| Comments, key order, formatting | Preserved (the YAML document is edited in place, not regenerated) |
+| No `compose.yml` at all | Generated from scratch with the header |
+
+So your edits survive: pin `postgres:16`, add `POSTGRES_INITDB_ARGS`, mount an
+init SQL script — install never reverts any of it. How services get *selected*
+(dependency scan, `config/*.ts` inspection, `--services`) is covered in
+[Install](/docs/sail/install).
+
+<Callout type="warn">
+Changing an image **tag** does not migrate the data. A `sail-postgres` volume
+written by `postgres:17` will make `postgres:16` refuse to start. Recreate the
+volume with `node ace sail:down --volumes` (destroys all local data for that
+worktree) and re-run your migrations and seeders.
+</Callout>
+
+Adding your own service is just YAML. To make its host port shift per worktree
+too, reuse the interpolation scheme with your own variable:
+
+```yaml
+  meilisearch:
+    image: getmeili/meilisearch:v1.11
+    ports:
+      - ${MY_MEILI_PORT:-7700}:7700
+```
+
+Sail starts and stops it with the stack (it targets the whole file), but it
+never shows up in `sail:info`, gets an env key, or receives a computed port.
+
+## Service specifics
+
+**Mailpit.** No credentials, no volume, no healthcheck — ready as soon as it is
+up. The app sends to `SMTP_HOST`/`SMTP_PORT` with no auth and no TLS; every
+message is captured, nothing leaves your machine, and you read it in the inbox
+UI on the `ui` port. With no volume, `sail:down` empties the mailbox.
+
+**MinIO.** The container runs `server /data --console-address ":8900"`, which
+is why the console has a stable container port to publish. There is **no init
+container and no bucket bootstrap** — sail never creates the `local` bucket for
+you. Selecting MinIO therefore prints a setup note at install time:
+
+```text
+MinIO: add `endpoint: env.get('S3_ENDPOINT')` to the s3 disk in config/drive.ts
+and create the 'local' bucket in the MinIO console
+```
+
+Both steps are manual by design — the stock `config/drive.ts` stub has no
+`endpoint` key to override, and sail does not rewrite third-party config
+bodies. Open the console, log in with `sail` / `password`, create a bucket
+named `local`, and the `S3_*` env sail wrote will just work.
+
+**Postgres / MySQL / Redis.** `sail:psql`, `sail:mysql` and `sail:redis` open
+the service's own client *inside* the container (`docker compose exec`), so
+they use container ports and the built-in credentials and are immune to the
+host-side offset. All three are stateful: a `sail:down` without `--volumes`
+keeps your tables, queues and cached sessions. See
+[Commands](/docs/sail/commands).
+
+See also: [Install](/docs/sail/install) for how services are selected and wired,
+[Worktrees](/docs/sail/worktrees) for the port offsets, and
+[Troubleshooting](/docs/sail/troubleshooting) when a port or healthcheck misbehaves.
