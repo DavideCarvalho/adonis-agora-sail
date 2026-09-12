@@ -177,7 +177,8 @@ export class DockerCompose {
   }
 
   /**
-   * Streams service logs to the terminal.
+   * Runs `docker compose logs`. Streams to the terminal only with
+   * `follow`; otherwise the output comes back in the {@link RunResult}.
    */
   logs(options: {
     service?: string | undefined;
