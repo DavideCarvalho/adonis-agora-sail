@@ -210,9 +210,10 @@ export function ensureSchemaSection(
 
 /**
  * Builds the sail-managed `.env.local` block: the stack's resolved app env
- * (offset applied) as sorted `KEY=value` lines between markers. Ports are
- * not secrets, so plaintext here is fine — secret values are never written
- * by sail.
+ * (offset applied) as sorted `KEY=value` lines between markers. The block
+ * carries the services' fixed dev credentials (`DB_PASSWORD`,
+ * `AWS_SECRET_ACCESS_KEY`) next to the ports, which is why the file it lands
+ * in is kept git-ignored.
  */
 export function buildSailEnvBlock(appEnv: Record<string, string>): string {
   const lines = Object.entries(appEnv)
