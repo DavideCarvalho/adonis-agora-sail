@@ -1,5 +1,11 @@
 # @adonis-agora/sail
 
+## 0.2.2
+
+### Patch Changes
+
+- [`e389934`](https://github.com/DavideCarvalho/adonis-agora-sail/commit/e389934f67fcdcc8046c7e85fb6bd5c719bdf490) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Correct the `DockerCompose.logs()` doc comment: it only streams to the terminal when `follow` is set, otherwise the output is returned in the `RunResult`.
+
 ## 0.2.1
 
 ### Patch Changes
