@@ -100,7 +100,7 @@ the selection is the only evidence there is:
 | Pattern | Signal |
 | --- | --- |
 | `store: 'lucid'`, `default: 'lucid'`, `active: 'lucid'` | the configured database (postgres or mysql, per step 2) |
-| `store: 'redis'` / `default: 'redis'` / `transports.redis(` / `admissions.redis(` / `bullmq` | redis |
+| `store: 'redis'` / `default: 'redis'` / `transports.redis(` / `admissions.redis(` / `drivers.redis(` / `bullmq` | redis |
 | `disks.s3(` / `services.s3(` / `disk: 's3'` | minio |
 
 Selections that are *defined but not active* become notes, not evidence — sail
@@ -109,6 +109,13 @@ that is defined while another store is active, a `store: 'memory'` in a config
 that also knows `lucid`, a `lucid` selection with no pg/mysql connection
 configured, or a `lucid` selection on SQLite each produce a note telling you
 exactly what to flip and to re-run install.
+
+One shape gets a different note: when the active store is read from the
+environment (`default: env.get('LOCK_STORE')`, which is how `config/lock.ts`,
+`config/limiter.ts` and `config/session.ts` ship), the answer lives in `.env`
+and no amount of reading the file settles it. Sail says so and points at
+`--services=`, rather than telling you to select something you may already
+have selected.
 
 <Callout type="info">
 **Commented-out code never counts.** Every file is stripped of block and `//`
@@ -181,6 +188,13 @@ Main-checkout defaults (base ports, offset 0) are added only for keys
 tuned value survives every re-run. `DB_PASSWORD`,
 `AWS_SECRET_ACCESS_KEY` and `REDIS_PASSWORD` are written to `.env` but omitted
 from the committed `.env.example`.
+
+<Callout type="warn">
+Only dotenv files that already exist are written. On a fresh clone — where
+`.env` is gitignored and only `.env.example` is checked in — the defaults land
+in the example and `.env` is not created. Copy it first
+(`cp .env.example .env`) if you want them where the app reads them.
+</Callout>
 
 ```bash
 DB_HOST=127.0.0.1                   # postgres (mysql: DB_PORT=3306)
