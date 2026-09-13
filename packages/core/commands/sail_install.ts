@@ -13,7 +13,7 @@ import {
   scanAppConfig,
 } from '../src/app_scan.js';
 import { generateComposeFile, mergeComposeFile } from '../src/compose_file.js';
-import { readDotEnvKeySets } from '../src/dotenv.js';
+import { DOTENV_EXAMPLE_FILE_NAME, DOTENV_FILE_NAME, readDotEnvKeySets } from '../src/dotenv.js';
 import { buildStackInfo, formatStackInfo } from '../src/info.js';
 import { isServiceName, SERVICE_NAMES, SERVICES } from '../src/services.js';
 import type { SailServiceName } from '../src/types.js';
@@ -60,6 +60,37 @@ const SECRET_LIKE_KEYS = ['DB_PASSWORD', 'AWS_SECRET_ACCESS_KEY', 'REDIS_PASSWOR
  * defaults. Re-running install only ever appends missing pieces — hand edits
  * are preserved. Docker itself is not required for this command.
  */
+/**
+ * A logger the codemods can report into without anything reaching stdout.
+ * Covers exactly the surface they use — `action`, `await`, `fatal`,
+ * `getColors`, `log`, `success`, `warning` — and keeps real colors, since
+ * they format strings with them.
+ */
+function mutedLogger(source: { getColors: () => unknown }) {
+  const noop = () => {};
+  return {
+    action: () => ({ succeeded: noop, failed: noop, skipped: noop, displayDuration: noop }),
+    await: noop,
+    fatal: noop,
+    getColors: () => source.getColors(),
+    log: noop,
+    success: noop,
+    warning: noop,
+  };
+}
+
+/**
+ * File contents, or null when it does not exist. Used to tell "the codemod
+ * edited this" from "the codemod reported success and wrote nothing".
+ */
+async function readIfPresent(appRoot: string, relativePath: string): Promise<string | null> {
+  try {
+    return await readFile(join(appRoot, relativePath), 'utf8');
+  } catch {
+    return null;
+  }
+}
+
 export default class SailInstall extends SailBaseCommand {
   static override commandName = 'sail:install';
   static override description = 'Generate a worktree-aware compose.yml for local dev services';
@@ -204,6 +235,7 @@ export default class SailInstall extends SailBaseCommand {
     validationsSkipped?: string | undefined;
     variablesSkipped?: string | undefined;
   }> {
+    const appRoot = fileURLToPath(this.app.appRoot);
     const defaults = baseAppEnv(selected);
     const needed = Object.keys(defaults);
     const toValidate = needed.filter(
@@ -212,7 +244,7 @@ export default class SailInstall extends SailBaseCommand {
 
     let dotEnvKeys = { env: new Set<string>(), example: new Set<string>() };
     try {
-      dotEnvKeys = await readDotEnvKeySets(fileURLToPath(this.app.appRoot));
+      dotEnvKeys = await readDotEnvKeySets(appRoot);
     } catch {
       // unreadable — treat every key as missing and let the codemods sort it out
     }
@@ -227,6 +259,14 @@ export default class SailInstall extends SailBaseCommand {
     let codemods: Awaited<ReturnType<SailBaseCommand['createCodemods']>> | undefined;
     try {
       codemods = await this.createCodemods();
+      // The codemods report progress through the command's logger, which is
+      // right for a human and fatal under `--json`, where stdout has to stay
+      // one parseable document. `useLogger` is their own escape hatch for it.
+      if (this.wantsJson) {
+        // `useLogger` is typed for a full cliui `Logger`; the codemods only
+        // ever call the handful of methods this stub implements.
+        codemods.useLogger(mutedLogger(this.logger) as unknown as typeof this.logger);
+      }
     } catch {
       const skipped: {
         validations: string[];
@@ -253,6 +293,7 @@ export default class SailInstall extends SailBaseCommand {
     } = { validations: [], variables: [] };
 
     if (toValidate.length > 0) {
+      const before = await readIfPresent(appRoot, 'start/env.ts');
       try {
         await codemods.defineEnvValidations({
           leadingComment: 'Variables for @adonis-agora/sail local services',
@@ -260,21 +301,42 @@ export default class SailInstall extends SailBaseCommand {
             toValidate.map((key) => [key, ENV_VALIDATIONS[key] as string]),
           ),
         });
-        result.validations = toValidate;
       } catch {
-        result.validationsSkipped = `could not edit start/env.ts — add by hand: ${toValidate.map((key) => `${key}: ${ENV_VALIDATIONS[key]}`).join('; ')}`;
+        // handled below — the on-disk check is what decides either way
+      }
+      // The codemods catch their own failures (a missing `Env.create`, an
+      // absent code transformer) and report them through the logger instead of
+      // throwing, so trusting "it did not throw" is how sail ended up claiming
+      // it had edited a file it never touched.
+      const after = await readIfPresent(appRoot, 'start/env.ts');
+      if (after !== null && after !== before) {
+        result.validations = toValidate;
+      } else {
+        result.validationsSkipped = `not written — add to start/env.ts by hand: ${toValidate.map((key) => `${key}: ${ENV_VALIDATIONS[key]}`).join('; ')}`;
       }
     }
 
     if (toDefine.length > 0) {
+      const before = await Promise.all([
+        readIfPresent(appRoot, DOTENV_FILE_NAME),
+        readIfPresent(appRoot, DOTENV_EXAMPLE_FILE_NAME),
+      ]);
       try {
         await codemods.defineEnvVariables(
           Object.fromEntries(toDefine.map((key) => [key, defaults[key] as string])),
           { omitFromExample: SECRET_LIKE_KEYS.filter((key) => toDefine.includes(key)) },
         );
-        result.variables = toDefine;
       } catch {
-        result.variablesSkipped = `could not edit .env — add by hand: ${toDefine.map((key) => `${key}=${defaults[key]}`).join(' ')}`;
+        // handled below
+      }
+      const after = await Promise.all([
+        readIfPresent(appRoot, DOTENV_FILE_NAME),
+        readIfPresent(appRoot, DOTENV_EXAMPLE_FILE_NAME),
+      ]);
+      if (after.some((content, index) => content !== null && content !== before[index])) {
+        result.variables = toDefine;
+      } else {
+        result.variablesSkipped = `not written — add to .env by hand: ${toDefine.map((key) => `${key}=${defaults[key]}`).join(' ')}`;
       }
     }
 

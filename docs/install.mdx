@@ -206,6 +206,12 @@ These are base-port values. In a linked worktree the live ports differ:
 instead of reading ports from `.env`.
 </Callout>
 
+Install verifies these on disk rather than trusting the codemods' return: they
+swallow their own failures — no `@adonisjs/assembler`, no `tsconfig.json` at the
+app root, a `start/env.ts` without `Env.create`, a `.env` that does not exist —
+so a file that did not change is reported as `not written` with the snippet to
+paste, never as added.
+
 If the codemods are unavailable or throw, install does **not** fail — env
 wiring must never block the compose file. You get the exact hand-edit snippet
 instead, surfaced as `validationsSkipped` / `variablesSkipped` in the JSON report.

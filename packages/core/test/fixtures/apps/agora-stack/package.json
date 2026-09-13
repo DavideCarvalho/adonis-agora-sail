@@ -1,0 +1,60 @@
+{
+  "name": "@educacao/entre-textos",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "start": "node bin/server.js",
+    "build": "node ace build",
+    "dev": "concurrently \"pnpm with-env node ace serve --hmr\" \"PORT=3334 pnpm with-env node ace queue:work\" \"pnpm with-env node ace durable:work\"",
+    "start:queue": "node ace queue:work",
+    "start:durable": "node ace durable:work",
+    "test": "node ace test",
+    "with-env": "dotenv -e ../../.env --",
+    "migration:run": "pnpm with-env node ace migration:run --connection=entretextos"
+  },
+  "imports": {
+    "#start/*": "./start/*.js",
+    "#config/*": "./config/*.js",
+    "#models/*": "./app/models/*.js",
+    "#agent/*": "./app/agent/*.js"
+  },
+  "devDependencies": {
+    "@adonisjs/assembler": "catalog:adonis",
+    "@japa/runner": "catalog:",
+    "@testcontainers/postgresql": "12.1.0",
+    "@testcontainers/redis": "12.1.0",
+    "concurrently": "catalog:",
+    "typescript": "catalog:frontend"
+  },
+  "dependencies": {
+    "@adonis-agora/authkit-server": "0.65.2",
+    "@adonis-agora/authz": "0.13.3",
+    "@adonis-agora/durable": "0.38.2",
+    "@adonis-agora/media": "0.15.1",
+    "@adonis-agora/payments": "0.11.0",
+    "@adonis-agora/telescope": "0.19.0",
+    "@adonis-agora/telescope-ui": "1.4.0",
+    "@adonisjs/cache": "catalog:adonis",
+    "@adonisjs/core": "catalog:adonis",
+    "@adonisjs/drive": "catalog:adonis",
+    "@adonisjs/limiter": "catalog:adonis",
+    "@adonisjs/lock": "catalog:adonis",
+    "@adonisjs/lucid": "catalog:adonis",
+    "@adonisjs/mail": "catalog:adonis",
+    "@adonisjs/queue": "catalog:adonis",
+    "@adonisjs/redis": "catalog:adonis",
+    "@adonisjs/session": "catalog:adonis",
+    "@adonisjs/transmit": "catalog:adonis",
+    "@aws-sdk/client-s3": "catalog:",
+    "cron-parser": "5.10.0",
+    "ioredis": "catalog:",
+    "knex": "catalog:",
+    "luxon": "catalog:",
+    "pg": "catalog:",
+    "reflect-metadata": "catalog:",
+    "sharp": "catalog:"
+  },
+  "prettier": "@adonisjs/prettier-config"
+}

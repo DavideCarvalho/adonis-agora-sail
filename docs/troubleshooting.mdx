@@ -85,8 +85,8 @@ No command given
 ```
 
 Hint: `Usage: node ace sail:exec <service> -- <command...> (e.g. node ace
-sail:exec redis -- redis-cli ping)`. The `--` separator is required, otherwise
-ace consumes your command's flags.
+sail:exec redis -- redis-cli ping)`. Use the `--` separator: without it ace
+parses your command's own flags as its own.
 
 ```text
 sail:exec failed (exit 1):
@@ -116,8 +116,9 @@ Aborted — containers left running, volumes kept.
 ```
 
 Not an error: `sail:down --volumes` asked for confirmation on an interactive
-terminal and you declined (or the prompt threw). Outside a TTY, and inside an
-agent, the explicit flag itself counts as consent and no prompt appears.
+terminal and you declined (or the prompt threw). Under `--json` the same abort
+arrives as `{ "status": "aborted", "message": "…" }`. Outside a TTY, and inside
+an agent, the explicit flag itself counts as consent and no prompt appears.
 
 ## Ports and worktrees
 

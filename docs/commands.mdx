@@ -118,7 +118,7 @@ Runs `docker compose down --remove-orphans` for *this worktree's* project only; 
 | `--volumes` | `-v` | boolean | `false` | Adds `--volumes`: deletes the named volumes and all local service data |
 | `--json` | — | boolean | agent-detected | Machine-readable output |
 
-With `--volumes` on an interactive TTY the command asks `Delete named volumes? All local service data will be lost`. Declining (or a prompt that throws, e.g. Ctrl+C) prints `Aborted — containers left running, volumes kept.` and exits `0` — nothing is stopped at all, not just the volumes. Under CI or an agent there is no prompt: the explicit flag is the consent.
+With `--volumes` on an interactive TTY the command asks `Delete named volumes? All local service data will be lost`. Declining (or a prompt that throws, e.g. Ctrl+C) prints `Aborted — containers left running, volumes kept.` and exits `0` — nothing is stopped at all, not just the volumes; under `--json` the same abort comes back as `{ "status": "aborted", "message": "…" }`. Under CI or an agent there is no prompt: the explicit flag is the consent.
 
 ```json
 { "status": "down", "projectName": "shop-feature-login", "volumes": true }
@@ -261,7 +261,7 @@ node ace sail:sync-env [--json]
 
 Writes the worktree's resolved ports into the `# sail:start` / `# sail:end` block of `.env.local` **and** `.env.test.local` (the file the Adonis loader reads under `NODE_ENV=test`), creating both when missing and adding them to `.gitignore`. Everything outside the markers is preserved. No docker, no flags beyond `--json`: safe to run at any time, a no-op when nothing changed, and exactly the sync `sail:up` performs on success.
 
-Files that look like varlock ciphertext are skipped, not corrupted — and that skip sets the **exit code to `1`**, with the warning `` <file> looks encrypted — ports NOT synced there, set them from `node ace sail:info --env` through your secret manager instead ``. See [varlock](/docs/sail/varlock).
+Files that look like varlock ciphertext are skipped, not corrupted — and that skip sets the **exit code to `1`** and reports `"status": "skipped"` rather than `"synced"`, with the warning `` <file> looks encrypted — ports NOT synced there, set them from `node ace sail:info --env` through your secret manager instead ``. See [varlock](/docs/sail/varlock).
 
 ```json
 {

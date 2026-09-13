@@ -48,7 +48,10 @@ export default class SailSyncEnv extends SailBaseCommand {
 
     if (this.wantsJson) {
       this.printJson({
-        status: 'synced',
+        // A run that skipped a file did not do the thing it was asked to do,
+        // and it exits 1 — reporting "synced" would have the payload
+        // contradict the exit code for the one consumer that reads both.
+        status: encrypted.length > 0 ? 'skipped' : 'synced',
         files: result.files,
         gitignore: result.gitignore,
         keys: Object.keys(info.appEnv).sort(),

@@ -94,7 +94,7 @@ describe('buildSchemaSection', () => {
     expect(section).toMatch(/# @public\n# @type=number\nDB_PORT=5432/);
     expect(section).toMatch(/# @public\nS3_BUCKET=local/);
     // Credentials stay sensitive by default (no @public on their block).
-    const passwordBlock = section.split('\n').findIndex((line) => line === 'DB_PASSWORD=password');
+    const passwordBlock = section.split('\n').indexOf('DB_PASSWORD=password');
     expect(passwordBlock).toBeGreaterThan(0);
     expect(section.split('\n')[passwordBlock - 1]).not.toBe('# @public');
     expect(section).not.toMatch(/# @public\nAWS_SECRET_ACCESS_KEY/);
