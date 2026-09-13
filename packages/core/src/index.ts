@@ -34,6 +34,17 @@ export {
   stripComments,
   stripLineComment,
 } from './app_scan.js';
+export type { CertPaths } from './certs.js';
+export {
+  buildTlsConfig,
+  certPaths,
+  checkMkcert,
+  expandCertHostnames,
+  isCaInstalled,
+  issueCert,
+  MKCERT_CA_INSTALL_HINT,
+  MKCERT_INSTALL_HINT,
+} from './certs.js';
 export { generateComposeFile, mergeComposeFile, servicesInComposeFile } from './compose_file.js';
 export { buildSailContext, resolveSailContext, sanitizeProjectName } from './context.js';
 export type { DbShellService } from './db_shell.js';
@@ -60,12 +71,37 @@ export {
   resolveStackInfo,
 } from './info.js';
 export { computeWorktreePortOffset, PORT_RANGE, resolveHostPorts } from './ports.js';
+export type { ProxyPaths } from './proxy.js';
+export {
+  buildRouteConfig,
+  DEFAULT_DOMAIN_SUFFIXES,
+  generateProxyComposeFile,
+  hostnamesFor,
+  listRegisteredProjects,
+  PROXY_PROJECT_NAME,
+  proxyPaths,
+  routeConfigPath,
+  sailHomeDir,
+} from './proxy.js';
+export {
+  DOMAIN_ENV_KEY,
+  ensureProxyScaffold,
+  hasIssuedCert,
+  isDomainEnabled,
+  proxyContext,
+  refreshTlsConfig,
+  removeRoute,
+  resolveDomainHostnames,
+  TLS_CONFIG_FILE_NAME,
+  writeRoute,
+} from './proxy_state.js';
 export type { ComposeProject } from './prune.js';
 export {
   findOrphanProjects,
   isManagedProject,
   parseComposeProjects,
 } from './prune.js';
+export { resolverInstructions, resolverSupported } from './resolver.js';
 export {
   isServiceName,
   SAIL_DATABASE,

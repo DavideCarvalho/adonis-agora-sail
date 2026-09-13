@@ -1,0 +1,208 @@
+---
+title: Local domains
+description: Opt-in — serve the app on a myapp.localhost / myapp.test name through a shared proxy, with per-worktree routing, subdomains and HTTPS, instead of memorising a shifted port.
+icon: Globe
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Steps, Step } from 'fumadocs-ui/components/steps';
+
+Worktree isolation costs you the one number you used to know by heart: the app
+is on `3333` in the main checkout, `3736` in one worktree and `4103` in
+another. `sail:domain` trades those for names — `shop.localhost`,
+`shop-feature-login.localhost` — that keep pointing at the right port on their
+own.
+
+<Callout type="info">
+This is **opt-in and per machine**. Until you run `sail:domain --enable` in an
+app, sail starts no proxy, writes nothing outside your project, and `sail:up`
+behaves exactly as it does today. Nothing in `sail:install` turns it on.
+</Callout>
+
+## Why bother
+
+A port is fine until something needs a *name*:
+
+- **OAuth and webhooks** — providers that reject `localhost` callbacks, or that
+  you want pointed at a stable redirect URI across worktrees.
+- **Cookies** — `Domain`, `SameSite` and subdomain sharing behave differently
+  on `localhost` than on a real hostname.
+- **Subdomain multi-tenancy** — `tenant1.shop.localhost` and
+  `tenant2.shop.localhost` both reach the app, so tenant resolution is
+  exercised locally the way it runs in production.
+- **Two worktrees open** — `shop.localhost` and `shop-feature-login.localhost`
+  instead of remembering which one got `3736`.
+
+## Enable it
+
+<Steps>
+<Step>
+
+From the app root:
+
+```bash
+node ace sail:domain --enable
+```
+
+That starts (or reuses) the shared proxy and registers this app:
+
+```
+Domains enabled for "shop-feature-login" → 127.0.0.1:3736
+  https://shop-feature-login.localhost
+  https://shop-feature-login.test
+```
+
+</Step>
+<Step>
+
+Start the app as usual — nothing about `serve` changes:
+
+```bash
+node ace serve --hmr
+```
+
+`shop-feature-login.localhost` now reaches it, as does any subdomain of it.
+
+</Step>
+<Step>
+
+Want the `.test` name too? It needs a one-time DNS resolver, which sail prints
+for your platform and never runs — it requires root:
+
+```bash
+node ace sail:domain --install
+```
+
+</Step>
+</Steps>
+
+`node ace sail:domain` with no flags reports where things stand: enabled or
+not, the hostnames, the port behind them and whether HTTPS is on.
+
+## `.localhost` vs `.test`
+
+`<project>.localhost` is the default because in a browser it costs nothing:
+Chrome, Edge and Firefox send every `*.localhost` name to `127.0.0.1`
+themselves, without asking DNS at all.
+
+Outside the browser it depends on the machine, so `--enable` checks rather than
+assumes — it looks the name up through the system resolver and warns you when
+it does not answer:
+
+```
+Browsers reach shop.localhost, shop.test on their own, but this machine's
+resolver does not — curl, Node and GUI clients will not
+```
+
+Two common reasons for that warning:
+
+- **macOS** does not synthesize `*.localhost` at all.
+- **Linux** does, inside systemd-resolved — but only for clients that ask it.
+  If `resolvectl query shop.localhost` answers while `getent hosts
+  shop.localhost` comes back empty, your `/etc/nsswitch.conf` `hosts:` line is
+  missing the `resolve` module, and curl, Node and your database GUI never
+  reach resolved.
+
+Either way the fix is the same: `sail:domain --install`, then use the `.test`
+name for anything outside a browser. Both names are always on the route, so
+installing the resolver later needs no re-enable — `.test` simply starts
+working.
+
+## HTTPS
+
+If [mkcert](https://github.com/FiloSottile/mkcert) is on your `PATH` when you
+enable domains, sail issues a certificate covering the hostnames *and* their
+wildcards, and the proxy serves HTTPS. Without mkcert it serves plain HTTP and
+says so; install mkcert and re-run `--enable` to upgrade.
+
+```bash
+mkcert -install   # once per machine — sail never runs this for you
+```
+
+Sail issues certificates but never touches your trust store: `mkcert -install`
+is the step that makes the browser trust them, and that is yours to run.
+
+## How it routes
+
+One Traefik container per machine, living in `~/.sail/proxy/`, owns ports
+`80` and `443` — they only fit once, so the proxy is shared by every sail app
+and every worktree rather than being per-stack. Each enabled app drops a route
+file in `~/.sail/proxy/conf/`, and Traefik reloads it on write: registering,
+re-pointing or removing an app never restarts the proxy or disturbs anyone
+else's routes.
+
+Your app keeps running on the host under `node ace serve --hmr`, with HMR and
+the debugger intact; only the routing lives in Docker. How the proxy reaches
+back to the host differs by platform, and sail generates the right one:
+
+| | Attachment | Route target |
+| --- | --- | --- |
+| **Linux** | `network_mode: host` | `127.0.0.1:<port>` |
+| **macOS / Windows** | bridge, publishing `80`/`443` | `host.docker.internal:<port>` |
+
+<Callout type="warn">
+The Linux split is not cosmetic. From the bridge, the app is only reachable
+through the Docker gateway, and any machine with a default-deny `INPUT` policy
+— `ufw enable` is enough — silently drops that traffic: the domain resolves,
+then times out with a 504. Sharing the host network removes the hop, so there
+is nothing for the firewall to block and no rule for you to add.
+</Callout>
+
+On macOS and Windows the proxy stays on the bridge, where `host.docker.internal`
+works out of the box and no host firewall sits in between. There, the app has
+to be listening on `0.0.0.0` rather than `127.0.0.1` for the container to reach
+it — the AdonisJS starter's `HOST=0.0.0.0` already is.
+
+`sail:up` refreshes the route for an app that has domains enabled, so a
+changed `PORT` or a renamed worktree re-points the name without your
+intervention. For every other app it is a single file check that does nothing.
+
+## Choosing the hostname
+
+By default the name is the compose project — the app name in the main
+checkout, `<app>-<worktree>` in a linked worktree. To pin it instead, set
+`SAIL_DOMAIN` in `.env`:
+
+```ini
+SAIL_DOMAIN=shop.test
+```
+
+Committing that in `.env` lets a team agree on *which* domain the app uses,
+while each developer still decides *whether* to run the proxy at all. Put it in
+`.env.local` to override just for yourself.
+
+<Callout type="warn">
+A pinned `SAIL_DOMAIN` is the same string in every worktree, and two worktrees
+cannot both own one hostname — the last `sail:up` wins the route. Pin it for
+single-checkout apps; leave the default in place when you work in worktrees.
+</Callout>
+
+## Turning it off
+
+```bash
+node ace sail:domain --disable
+```
+
+Removes this app's route and, if it was the last one, stops the proxy — a
+container holding port 80 for nothing is worse than no container. Certificates
+are kept, so re-enabling later is instant. Nothing in your repository changes
+either way, except the `SAIL_DOMAIN` line if you added one.
+
+## Troubleshooting
+
+**The name does not resolve.** `--enable` warns about this when it happens. In
+a browser it should still work; for curl and friends, run `--install` and use
+the `.test` name. A custom `SAIL_DOMAIN` resolves only if you set its DNS up
+yourself.
+
+**It resolves but nothing answers (504).** The app is not running on the port
+the route targets — `node ace sail:domain` prints which one. On macOS and
+Windows, also check the app is bound to `0.0.0.0`: on `127.0.0.1` the container
+cannot reach it.
+
+**The proxy will not start.** Something else holds `80`/`443` — another
+Traefik, an nginx, Docker Desktop's own proxy. Stop it and re-run `--enable`;
+the failure names compose's output.
+
+**HTTPS warns about the certificate.** `mkcert -install` has not been run on
+this machine, so the local CA is not trusted yet.

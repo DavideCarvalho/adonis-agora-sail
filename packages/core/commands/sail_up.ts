@@ -2,8 +2,18 @@ import { fileURLToPath } from 'node:url';
 import { flags } from '@adonisjs/core/ace';
 import type { CommandOptions } from '@adonisjs/core/types/ace';
 
+import { DockerCompose } from '../src/docker.js';
 import { encryptedEnvWarning, syncSailLocalEnvs } from '../src/dotenv.js';
 import { formatStackInfo, resolveStackInfo } from '../src/info.js';
+import {
+  ensureProxyScaffold,
+  hasIssuedCert,
+  isDomainEnabled,
+  proxyContext,
+  resolveDomainHostnames,
+  writeRoute,
+} from '../src/proxy_state.js';
+import { resolveSharePort } from '../src/share.js';
 import { SailBaseCommand } from './sail_base_command.js';
 
 /**
@@ -75,9 +85,10 @@ export default class SailUp extends SailBaseCommand {
     const synced = await syncSailLocalEnvs(fileURLToPath(this.app.appRoot), info.appEnv);
     const envSync = synced.files.map((file) => `${file.file} ${file.action}`).join(', ');
     const encrypted = synced.files.filter((file) => file.action === 'skipped-encrypted');
+    const domain = await this.#refreshDomain(info.projectName);
 
     if (this.wantsJson) {
-      this.printJson({ status: 'up', envSync: synced, ...info });
+      this.printJson({ status: 'up', envSync: synced, ...(domain ? { domain } : {}), ...info });
       return;
     }
 
@@ -86,6 +97,42 @@ export default class SailUp extends SailBaseCommand {
     for (const file of encrypted) {
       this.logger.warning(encryptedEnvWarning(file.file));
     }
+    if (domain) {
+      this.logger.info(`app: ${domain.urls.join(', ')}`);
+    }
     this.logger.log(formatStackInfo(info));
+  }
+
+  /**
+   * Keeps the shared proxy pointing at this worktree — but only for an app
+   * that opted into domains with `sail:domain --enable`. Everywhere else this
+   * is a single file check that changes nothing, so the default `sail:up`
+   * neither starts a proxy nor mentions one.
+   *
+   * The refresh matters because the target moves: a `PORT` change, or a
+   * worktree whose name (and therefore offset) differs from the one that was
+   * registered, would otherwise leave the domain pointing at a dead port.
+   */
+  async #refreshDomain(
+    projectName: string,
+  ): Promise<{ urls: string[]; targetPort: number } | null> {
+    if (!(await isDomainEnabled(projectName))) {
+      return null;
+    }
+
+    const appRoot = fileURLToPath(this.app.appRoot);
+    const context = await this.sailContext();
+    const [{ port }, hostnames, paths] = await Promise.all([
+      resolveSharePort(appRoot, { worktreeName: context.worktree?.name ?? null }),
+      resolveDomainHostnames(appRoot, projectName),
+      ensureProxyScaffold(),
+    ]);
+
+    const tls = await hasIssuedCert(paths.certsDir, projectName);
+    await writeRoute({ projectName, hostnames, targetPort: port, tls });
+    await new DockerCompose(proxyContext(paths)).up();
+
+    const scheme = tls ? 'https' : 'http';
+    return { urls: hostnames.map((hostname) => `${scheme}://${hostname}`), targetPort: port };
   }
 }
