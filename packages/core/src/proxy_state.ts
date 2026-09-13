@@ -3,7 +3,6 @@ import { access, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promise
 import { join } from 'node:path';
 
 import { buildTlsConfig, type CertPaths, certPaths } from './certs.js';
-import { DOTENV_FILE_NAME } from './dotenv.js';
 import {
   buildRouteConfig,
   CERTS_MOUNT,
@@ -14,8 +13,8 @@ import {
   proxyPaths,
   routeConfigPath,
 } from './proxy.js';
+import { dotEnvCandidates } from './share.js';
 import type { SailContext } from './types.js';
-import { LOCAL_ENV_FILE_NAME } from './varlock.js';
 
 /** Name of the aggregated TLS config Traefik picks up from the conf dir. */
 export const TLS_CONFIG_FILE_NAME = 'tls.yml';
@@ -121,8 +120,11 @@ export async function refreshTlsConfig(home?: string): Promise<CertPaths[]> {
  * of advertising a scheme nothing can complete.
  */
 export async function hasIssuedCert(certsDir: string, projectName: string): Promise<boolean> {
+  const { certFile, keyFile } = certPaths(certsDir, projectName);
   try {
-    await access(certPaths(certsDir, projectName).certFile);
+    // Both halves: a lone .pem builds a TLS router whose handshake can never
+    // complete, which reads as "HTTPS is broken" rather than "HTTPS is off".
+    await Promise.all([access(certFile), access(keyFile)]);
     return true;
   } catch {
     return false;
@@ -149,6 +151,29 @@ export async function resolvesLocally(hostname: string): Promise<boolean> {
   }
 }
 
+/**
+ * Reduces a pinned value to something that can actually be routed to: Traefik
+ * lowercases the request host before matching a rule and mkcert lowercases a
+ * SAN, so a value carrying uppercase, a scheme or a port yields a rule and a
+ * certificate no request ever satisfies. Anything left that is not a hostname
+ * is dropped rather than half-honoured.
+ */
+export function normalizeHostname(value: string): string | null {
+  const trimmed = value
+    .trim()
+    .replace(/^['"]|['"]$/g, '')
+    .trim()
+    .toLowerCase()
+    .replace(/^[a-z][a-z0-9+.-]*:\/\//, '')
+    .replace(/[/?#].*$/, '')
+    .replace(/:\d+$/, '')
+    .replace(/\.$/, '');
+
+  return /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/.test(trimmed)
+    ? trimmed
+    : null;
+}
+
 /** Dotenv key letting a team pin the app's hostname in the repo. */
 export const DOMAIN_ENV_KEY = 'SAIL_DOMAIN';
 
@@ -162,16 +187,17 @@ export const DOMAIN_ENV_KEY = 'SAIL_DOMAIN';
 export async function resolveDomainHostnames(
   appRootPath: string,
   projectName: string,
+  options: { nodeEnv?: string | undefined } = {},
 ): Promise<string[]> {
-  for (const file of [LOCAL_ENV_FILE_NAME, DOTENV_FILE_NAME]) {
+  for (const file of dotEnvCandidates(options.nodeEnv ?? process.env.NODE_ENV)) {
     try {
       const content = await readFile(join(appRootPath, file), 'utf8');
       const match = content.match(
         new RegExp(`^\\s*(?:export\\s+)?${DOMAIN_ENV_KEY}\\s*=\\s*(.+?)\\s*$`, 'm'),
       );
-      const value = match?.[1]?.replace(/^['"]|['"]$/g, '').trim();
-      if (value) {
-        return [value];
+      const pinned = normalizeHostname(match?.[1] ?? '');
+      if (pinned) {
+        return [pinned];
       }
     } catch {
       // missing file — next candidate

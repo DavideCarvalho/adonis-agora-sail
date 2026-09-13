@@ -169,7 +169,13 @@ SAIL_DOMAIN=shop.test
 
 Committing that in `.env` lets a team agree on *which* domain the app uses,
 while each developer still decides *whether* to run the proxy at all. Put it in
-`.env.local` to override just for yourself.
+`.env.local` to override just for yourself — the files are read in the same
+Adonis loader priority `PORT` follows, so the domain and the port it routes to
+can never come from different files.
+
+The value is reduced to a hostname before use: case is folded, and a scheme,
+port or path is stripped, so `https://Shop.Test:3333` pins `shop.test`. A value
+that is not a hostname at all is ignored, falling back to the default name.
 
 <Callout type="warn">
 A pinned `SAIL_DOMAIN` is the same string in every worktree, and two worktrees
@@ -187,6 +193,10 @@ Removes this app's route and, if it was the last one, stops the proxy — a
 container holding port 80 for nothing is worse than no container. Certificates
 are kept, so re-enabling later is instant. Nothing in your repository changes
 either way, except the `SAIL_DOMAIN` line if you added one.
+
+Disabling an app that never enabled domains is a no-op that touches nothing,
+and so is asking for status: neither creates `~/.sail/proxy` on a machine that
+has not opted in.
 
 ## Troubleshooting
 

@@ -10,7 +10,7 @@ import {
   MKCERT_INSTALL_HINT,
 } from '../src/certs.js';
 import { DockerCompose } from '../src/docker.js';
-import { listRegisteredProjects } from '../src/proxy.js';
+import { listRegisteredProjects, proxyPaths } from '../src/proxy.js';
 import {
   ensureProxyScaffold,
   hasIssuedCert,
@@ -126,6 +126,7 @@ export default class SailDomain extends SailBaseCommand {
     const result = await new DockerCompose(proxyContext(paths)).up();
     if (result.exitCode !== 0) {
       await removeRoute(projectName);
+      await refreshTlsConfig();
       this.failJsonAware(
         `Could not start the sail proxy:\n${this.tailLines(result.stderr || result.stdout)}`,
         'Ports 80 and 443 must be free — stop whatever is holding them and re-run',
@@ -179,6 +180,23 @@ export default class SailDomain extends SailBaseCommand {
   }
 
   async #disable(projectName: string, hostnames: string[]) {
+    // Nothing to remove means nothing to create: disabling an app that never
+    // opted in must not be the thing that materialises ~/.sail/proxy.
+    if (!(await isDomainEnabled(projectName))) {
+      if (this.wantsJson) {
+        this.printJson({
+          status: 'disabled',
+          projectName,
+          hostnames,
+          removed: false,
+          proxyStopped: false,
+        });
+        return;
+      }
+      this.logger.success(`Domains were not enabled for "${projectName}"`);
+      return;
+    }
+
     const paths = await ensureProxyScaffold();
     const removed = await removeRoute(projectName);
     await refreshTlsConfig();
@@ -196,11 +214,7 @@ export default class SailDomain extends SailBaseCommand {
       return;
     }
 
-    this.logger.success(
-      removed
-        ? `Domains disabled for "${projectName}" — the app is on 127.0.0.1 again`
-        : `Domains were not enabled for "${projectName}"`,
-    );
+    this.logger.success(`Domains disabled for "${projectName}" — the app is on 127.0.0.1 again`);
     if (proxyStopped) {
       this.logger.info('No apps left on the proxy — stopped it');
     }
@@ -208,7 +222,8 @@ export default class SailDomain extends SailBaseCommand {
 
   async #status(projectName: string, hostnames: string[], targetPort: number) {
     const enabled = await isDomainEnabled(projectName);
-    const paths = await ensureProxyScaffold();
+    // Reporting is read-only: resolve the paths, never create them.
+    const paths = proxyPaths();
     const tls = enabled && (await hasIssuedCert(paths.certsDir, projectName));
     const urls = enabled ? this.#urls(hostnames, tls) : [];
 

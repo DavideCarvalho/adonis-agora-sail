@@ -133,12 +133,40 @@ describe('resolveDomainHostnames', () => {
 
   it('prefers .env.local, and ignores quotes and an empty value', async () => {
     const appRoot = await mkdtemp(join(tmpdir(), 'sail-app-'));
+    const dev = { nodeEnv: 'development' };
     await writeFile(join(appRoot, '.env'), 'SAIL_DOMAIN=committed.test\n', 'utf8');
     await writeFile(join(appRoot, '.env.local'), 'SAIL_DOMAIN="mine.test"\n', 'utf8');
-    await expect(resolveDomainHostnames(appRoot, 'shop')).resolves.toEqual(['mine.test']);
+    await expect(resolveDomainHostnames(appRoot, 'shop', dev)).resolves.toEqual(['mine.test']);
 
     await writeFile(join(appRoot, '.env.local'), 'SAIL_DOMAIN=\n', 'utf8');
-    await expect(resolveDomainHostnames(appRoot, 'shop')).resolves.toEqual(['committed.test']);
+    await expect(resolveDomainHostnames(appRoot, 'shop', dev)).resolves.toEqual(['committed.test']);
+  });
+
+  it('walks the same dot-env priority the app port does', async () => {
+    const appRoot = await mkdtemp(join(tmpdir(), 'sail-app-'));
+    await writeFile(join(appRoot, '.env'), 'SAIL_DOMAIN=committed.test\n', 'utf8');
+    await writeFile(join(appRoot, '.env.local'), 'SAIL_DOMAIN=mine.test\n', 'utf8');
+    await writeFile(join(appRoot, '.env.test'), 'SAIL_DOMAIN=suite.test\n', 'utf8');
+
+    // Under NODE_ENV=test the Adonis loader skips .env.local, so the domain
+    // has to skip it too — otherwise it disagrees with the port it routes to.
+    await expect(resolveDomainHostnames(appRoot, 'shop', { nodeEnv: 'test' })).resolves.toEqual([
+      'suite.test',
+    ]);
+  });
+
+  it('drops a pinned value that could never be matched', async () => {
+    const appRoot = await mkdtemp(join(tmpdir(), 'sail-app-'));
+    const dev = { nodeEnv: 'development' };
+
+    await writeFile(join(appRoot, '.env'), 'SAIL_DOMAIN=https://Shop.Test:3333/app\n', 'utf8');
+    await expect(resolveDomainHostnames(appRoot, 'shop', dev)).resolves.toEqual(['shop.test']);
+
+    await writeFile(join(appRoot, '.env'), 'SAIL_DOMAIN=not a hostname\n', 'utf8');
+    await expect(resolveDomainHostnames(appRoot, 'shop', dev)).resolves.toEqual([
+      'shop.localhost',
+      'shop.test',
+    ]);
   });
 });
 

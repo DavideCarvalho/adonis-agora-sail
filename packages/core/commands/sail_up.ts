@@ -130,7 +130,17 @@ export default class SailUp extends SailBaseCommand {
 
     const tls = await hasIssuedCert(paths.certsDir, projectName);
     await writeRoute({ projectName, hostnames, targetPort: port, tls });
-    await new DockerCompose(proxyContext(paths)).up();
+
+    // A proxy that did not come up serves nothing: reporting the URLs anyway
+    // would send you debugging the app instead of port 80.
+    const result = await new DockerCompose(proxyContext(paths)).up();
+    if (result.exitCode !== 0) {
+      this.logger.warning(
+        `The stack is up, but the sail proxy is not — ${hostnames[0]} will not answer:\n${this.tailLines(result.stderr || result.stdout)}`,
+      );
+      this.logger.info('Free ports 80 and 443, then run `node ace sail:domain --enable`');
+      return null;
+    }
 
     const scheme = tls ? 'https' : 'http';
     return { urls: hostnames.map((hostname) => `${scheme}://${hostname}`), targetPort: port };
