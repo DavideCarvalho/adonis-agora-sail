@@ -85,8 +85,8 @@ No command given
 ```
 
 Hint: `Usage: node ace sail:exec <service> -- <command...> (e.g. node ace
-sail:exec redis -- redis-cli ping)`. The `--` separator is required, otherwise
-ace consumes your command's flags.
+sail:exec redis -- redis-cli ping)`. Use the `--` separator: without it ace
+parses your command's own flags as its own.
 
 ```text
 sail:exec failed (exit 1):
@@ -116,8 +116,9 @@ Aborted — containers left running, volumes kept.
 ```
 
 Not an error: `sail:down --volumes` asked for confirmation on an interactive
-terminal and you declined (or the prompt threw). Outside a TTY, and inside an
-agent, the explicit flag itself counts as consent and no prompt appears.
+terminal and you declined (or the prompt threw). Under `--json` the same abort
+arrives as `{ "status": "aborted", "message": "…" }`. Outside a TTY, and inside
+an agent, the explicit flag itself counts as consent and no prompt appears.
 
 ## Ports and worktrees
 
@@ -253,14 +254,17 @@ validated before anything is written.
 
 ```text
 codemods unavailable — add to start/env.ts by hand: DB_HOST: Env.schema.string({ format: 'host' }); …
-could not edit start/env.ts — add by hand: …
-could not edit .env — add by hand: …
+not written — add to start/env.ts by hand: …
+not written — add to .env by hand: …
 ```
 
-Env wiring never blocks the compose file. When an edit cannot be made — an
-unparseable `start/env.ts`, a read-only file — `sail:install` degrades to
-printing the exact snippet to paste — the compose
-file and the rest of the install already succeeded.
+Env wiring never blocks the compose file: the compose file and the rest of the
+install have already succeeded by this point. Install decides which of these to
+print by reading the files back after the edit, not by trusting it, so the
+common causes all surface here rather than being reported as success — no
+`@adonisjs/assembler` installed, no `tsconfig.json` at the app root, a
+`start/env.ts` without `Env.create`, an unparseable or read-only file, or a
+`.env` that does not exist yet.
 
 ### MinIO needs one manual step
 

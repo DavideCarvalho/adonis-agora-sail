@@ -6,7 +6,7 @@ icon: Terminal
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-`node ace add @adonis-agora/sail` registers `@adonis-agora/sail/commands` in `adonisrc.ts`, which exposes thirteen commands: `sail:install`, `sail:up`, `sail:down`, `sail:ps`, `sail:logs`, `sail:info`, `sail:exec`, `sail:prune`, `sail:sync-env`, `sail:psql`, `sail:mysql`, `sail:redis` and `sail:share`. None of them boots the application, so they work on a half-configured app.
+`node ace add @adonis-agora/sail` registers `@adonis-agora/sail/commands` in `adonisrc.ts`, which exposes fourteen commands: `sail:install`, `sail:up`, `sail:down`, `sail:ps`, `sail:logs`, `sail:info`, `sail:exec`, `sail:prune`, `sail:sync-env`, `sail:psql`, `sail:mysql`, `sail:redis`, `sail:share` and `sail:domain`. None of them boots the application, so they work on a half-configured app.
 
 ## Conventions shared by every command
 
@@ -118,7 +118,7 @@ Runs `docker compose down --remove-orphans` for *this worktree's* project only; 
 | `--volumes` | `-v` | boolean | `false` | Adds `--volumes`: deletes the named volumes and all local service data |
 | `--json` | — | boolean | agent-detected | Machine-readable output |
 
-With `--volumes` on an interactive TTY the command asks `Delete named volumes? All local service data will be lost`. Declining (or a prompt that throws, e.g. Ctrl+C) prints `Aborted — containers left running, volumes kept.` and exits `0` — nothing is stopped at all, not just the volumes. Under CI or an agent there is no prompt: the explicit flag is the consent.
+With `--volumes` on an interactive TTY the command asks `Delete named volumes? All local service data will be lost`. Declining (or a prompt that throws, e.g. Ctrl+C) prints `Aborted — containers left running, volumes kept.` and exits `0` — nothing is stopped at all, not just the volumes; under `--json` the same abort comes back as `{ "status": "aborted", "message": "…" }`. Under CI or an agent there is no prompt: the explicit flag is the consent.
 
 ```json
 { "status": "down", "projectName": "shop-feature-login", "volumes": true }
@@ -261,7 +261,7 @@ node ace sail:sync-env [--json]
 
 Writes the worktree's resolved ports into the `# sail:start` / `# sail:end` block of `.env.local` **and** `.env.test.local` (the file the Adonis loader reads under `NODE_ENV=test`), creating both when missing and adding them to `.gitignore`. Everything outside the markers is preserved. No docker, no flags beyond `--json`: safe to run at any time, a no-op when nothing changed, and exactly the sync `sail:up` performs on success.
 
-Files that look like varlock ciphertext are skipped, not corrupted — and that skip sets the **exit code to `1`**, with the warning `` <file> looks encrypted — ports NOT synced there, set them from `node ace sail:info --env` through your secret manager instead ``. See [varlock](/docs/sail/varlock).
+Files that look like varlock ciphertext are skipped, not corrupted — and that skip sets the **exit code to `1`** and reports `"status": "skipped"` rather than `"synced"`, with the warning `` <file> looks encrypted — ports NOT synced there, set them from `node ace sail:info --env` through your secret manager instead ``. See [varlock](/docs/sail/varlock).
 
 ```json
 {
@@ -303,6 +303,38 @@ The payload varies with the outcome; `failed` appears only on the real run:
 ```
 
 Human output is `No orphan sail stacks — everything running belongs to a live worktree.`, or the indented list under `Orphan sail stacks (re-run without --dry-run to stop them):`, or `Stopped orphan stack(s): <names>`. Any stack that fails to stop is reported as `Could not stop "<name>":\n<tail>` and sets the exit code to `1`. A listing failure exits `1` with `Could not list compose projects: docker compose ls failed: <stderr>` / `Is the Docker daemon running?`.
+
+## `sail:domain`
+
+```bash
+node ace sail:domain [--enable] [--disable] [--install] [--json]
+```
+
+Serves the app on `<project>.localhost` / `<project>.test` — and any subdomain of either — instead of a worktree-shifted port. Opt-in: with no flags it only reports status, and until `--enable` runs there is no proxy and nothing changes.
+
+| Flag | Type | Default | Effect |
+| --- | --- | --- | --- |
+| `--enable` | boolean | `false` | Registers the app with the shared proxy, issuing a certificate when mkcert is available, and starts the proxy |
+| `--disable` | boolean | `false` | Removes the route; stops the proxy when it was the last one |
+| `--install` | boolean | `false` | Prints the platform's one-time DNS setup for `.test`. Never runs it — it needs root |
+| `--json` | boolean | agent-detected | Machine-readable output |
+
+`--enable` and `--disable` together exit `1` with `Cannot combine --enable with --disable`. A proxy that will not start exits with compose's code, hinting that ports 80 and 443 must be free; the route is rolled back so a failed enable leaves nothing behind.
+
+The status payload (`--json`, no flags):
+
+```json
+{
+  "status": "enabled",
+  "projectName": "shop-feature-login",
+  "hostnames": ["shop-feature-login.localhost", "shop-feature-login.test"],
+  "urls": ["https://shop-feature-login.localhost", "https://shop-feature-login.test"],
+  "targetPort": 3736,
+  "tls": true
+}
+```
+
+`--enable` adds `caInstalled` (whether the mkcert CA is trusted yet) and `unresolved` (hostnames the system resolver does not answer for — browsers still reach those). Full walkthrough: [Local domains](/docs/sail/domains).
 
 ## `sail:share`
 

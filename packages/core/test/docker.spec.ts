@@ -6,6 +6,29 @@ import { describe, expect, it } from 'vitest';
 
 import { buildSailContext } from '../src/context.js';
 import { DockerCompose, findTakenPorts, parsePortHolders, parsePsEntries } from '../src/docker.js';
+import { DOCKER_METHODS, fakeDocker } from './helpers/ace.js';
+
+describe('the fake used by the command specs', () => {
+  // `private` is erased at runtime, so these still show up on the prototype.
+  // They are the process-spawning plumbing every public method funnels into;
+  // a fake has no business standing in for them.
+  const INTERNAL = ['constructor', 'run', 'runDocker', 'runGlobal', 'spawnDocker'];
+
+  it('answers to exactly the methods the real class exposes', () => {
+    // A fake answering to a name the class does not have is worse than no
+    // fake: the command's try/catch turns the TypeError into a plausible
+    // failure path and the spec passes while proving nothing. That is exactly
+    // how a `listProjects`/`lsProjects` slip survived into this harness.
+    const real = Object.getOwnPropertyNames(DockerCompose.prototype)
+      .filter((name) => !INTERNAL.includes(name))
+      .sort();
+
+    expect([...DOCKER_METHODS].sort()).toEqual(real);
+    for (const method of DOCKER_METHODS) {
+      expect(fakeDocker().instance).toHaveProperty(method);
+    }
+  });
+});
 
 describe('DockerCompose.portEnvironment', () => {
   it('exposes base ports in the main checkout', () => {

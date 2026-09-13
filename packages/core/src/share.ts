@@ -43,6 +43,21 @@ export function parseDotEnvPort(content: string): number | null {
 }
 
 /**
+ * Dot-env files in Adonis loader priority, most specific first. Anything that
+ * reads a value out of the app's environment has to walk them in this order —
+ * a `SAIL_DOMAIN` found in a file that `PORT` would have ignored (or the other
+ * way round) is how the two drift apart.
+ */
+export function dotEnvCandidates(nodeEnv: string | undefined = process.env.NODE_ENV): string[] {
+  return [
+    ...(nodeEnv ? [`.env.${nodeEnv}.local`] : []),
+    ...(!nodeEnv || !['test', 'testing'].includes(nodeEnv) ? ['.env.local'] : []),
+    ...(nodeEnv ? [`.env.${nodeEnv}`] : []),
+    '.env',
+  ];
+}
+
+/**
  * Resolves the local port the app serves on, mirroring `serve` exactly (see
  * `@adonisjs/core` `getBasePort` + `computeWorktreePort`): first `PORT`
  * found following the dot-env loader priority (`.env.<env>.local`,
@@ -63,12 +78,7 @@ export async function resolveSharePort(
   }
 
   const nodeEnv = options.nodeEnv ?? process.env.NODE_ENV;
-  const candidates = [
-    ...(nodeEnv ? [`.env.${nodeEnv}.local`] : []),
-    ...(!nodeEnv || !['test', 'testing'].includes(nodeEnv) ? ['.env.local'] : []),
-    ...(nodeEnv ? [`.env.${nodeEnv}`] : []),
-    '.env',
-  ];
+  const candidates = dotEnvCandidates(nodeEnv);
 
   let basePort = DEFAULT_APP_PORT;
   for (const file of candidates) {

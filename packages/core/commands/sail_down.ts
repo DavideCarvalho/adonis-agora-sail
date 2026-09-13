@@ -43,7 +43,14 @@ export default class SailDown extends SailBaseCommand {
         confirmed = false;
       }
       if (!confirmed) {
-        this.logger.info('Aborted — containers left running, volumes kept.');
+        const message = 'Aborted — containers left running, volumes kept.';
+        // Every other exit of this command is one JSON document under --json;
+        // a bare log line here would be the one a consumer cannot parse.
+        if (this.wantsJson) {
+          this.printJson({ status: 'aborted', message });
+          return;
+        }
+        this.logger.info(message);
         return;
       }
     }

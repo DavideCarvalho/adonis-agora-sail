@@ -53,6 +53,27 @@ export interface AppScan {
  * map (e.g. `MAIL_MAILER`, `DRIVE_DISK`) are reported but never auto-added:
  * sail does not guess their shape.
  */
+/**
+ * Whether the file picks its active store through an env variable
+ * (`default: env.get('LOCK_STORE')`), which is the shape `config/lock.ts`,
+ * `config/limiter.ts` and `config/session.ts` ship with. The value lives in
+ * `.env`, not in the file, so no amount of reading the source settles which
+ * store is active — and telling the user to "select it" is advice for
+ * something they may have done already.
+ */
+function selectedFromEnv(stripped: string): boolean {
+  return /(^|[^a-zA-Z])(store|default|active)\s*:\s*env\.get\(/.test(stripped);
+}
+
+/**
+ * Keys the framework reads without declaring, so their absence from
+ * `start/env.ts` is normal rather than an oversight. `config/logger.ts` in
+ * every stock AdonisJS app reads `APP_NAME` while no starter declares it —
+ * without this list, sail tells every user on their first install to go fix a
+ * file that is already correct.
+ */
+export const FRAMEWORK_ENV_KEYS: string[] = ['APP_NAME'];
+
 export const ENV_VALIDATIONS: Record<string, string> = {
   DB_HOST: "Env.schema.string({ format: 'host' })",
   DB_PORT: 'Env.schema.number()',
@@ -321,17 +342,21 @@ export function scanAppFiles(input: AppScanInput): AppScan {
       }
     } else if (/stores\.lucid\(/.test(stripped)) {
       notes.push(
-        `${file} defines a lucid store but the active store is not lucid — select it and re-run install to persist`,
+        selectedFromEnv(stripped)
+          ? `${file} picks its store from the environment — sail cannot tell whether lucid is the active one`
+          : `${file} defines a lucid store but the active store is not lucid — select it and re-run install to persist`,
       );
     }
     if (
       /(^|[^a-zA-Z])(store|default|active)\s*:\s*['"]redis['"]/.test(stripped) ||
-      /transports\.redis\(|admissions\.redis\(|bullmq/.test(stripped)
+      /transports\.redis\(|admissions\.redis\(|drivers\.redis\(|bullmq/.test(stripped)
     ) {
       agora.push({ file, service: 'redis', detail: 'redis transport' });
     } else if (/stores\.redis\(/.test(stripped)) {
       notes.push(
-        `${file} defines a redis store but the active store is not redis — select it and re-run install to use it`,
+        selectedFromEnv(stripped)
+          ? `${file} picks its store from the environment — sail cannot tell whether redis is the active one; pass --services=redis if it is`
+          : `${file} defines a redis store but the active store is not redis — select it and re-run install to use it`,
       );
     }
     if (/disks\.s3\(|services\.s3\(|disk\s*:\s*['"]s3['"]/.test(stripped)) {
@@ -429,7 +454,9 @@ export function scanAppFiles(input: AppScanInput): AppScan {
   const usedEnvKeys = [...usedKeys].sort();
   const missingEnvKeys = usedEnvKeys.filter((key) => !declaredEnvKeys.includes(key));
 
-  const unmappedMissing = missingEnvKeys.filter((key) => !(key in ENV_VALIDATIONS));
+  const unmappedMissing = missingEnvKeys.filter(
+    (key) => !(key in ENV_VALIDATIONS) && !FRAMEWORK_ENV_KEYS.includes(key),
+  );
   if (unmappedMissing.length > 0) {
     notes.push(
       `start/env.ts is missing ${unmappedMissing.join(', ')} — sail has no stock validation for these, add them by hand`,
