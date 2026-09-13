@@ -1,5 +1,35 @@
 # @adonis-agora/sail
 
+## 0.3.0
+
+### Minor Changes
+
+- [#10](https://github.com/DavideCarvalho/adonis-agora-sail/pull/10) [`3005508`](https://github.com/DavideCarvalho/adonis-agora-sail/commit/300550828f14e78089115370e3c669f24fe49faf) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - New `sail:domain` command: serve the app on `<project>.localhost` / `<project>.test` instead of a worktree-shifted port. Opt-in per app and per machine — until `sail:domain --enable` runs, no proxy exists and every other command behaves exactly as before.
+  
+  Enabling registers the app with a shared Traefik proxy (one per machine, since ports 80 and 443 only fit once) that routes the hostname, and any subdomain of it, to the host port this worktree's `serve` listens on. Subdomains are covered on purpose: tenant-per-subdomain apps are the case bare ports hurt most. `sail:up` re-points the route when the port moves, so a renamed worktree or a changed `PORT` keeps working without intervention.
+  
+  How the proxy reaches back to the host is platform-specific and generated accordingly: on Linux it shares the host network, because from the bridge the app sits behind the host's `INPUT` chain and any machine with ufw enabled drops that traffic into a 504; on macOS and Windows it publishes 80/443 off the bridge and targets `host.docker.internal`, which is what works there. `--enable` also looks the hostnames up through the system resolver and warns when they do not answer — `*.localhost` is resolved internally by browsers but not necessarily by curl, Node or a database GUI.
+  
+  HTTPS is issued with mkcert when the binary is present, covering the hostnames and their wildcards; without it the proxy serves plain HTTP and says so. Sail never runs `mkcert -install` and never installs a DNS resolver — both need root, so `sail:domain --install` prints the platform's instructions instead. `SAIL_DOMAIN` in `.env` pins the hostname when a team wants to agree on one.
+
+### Patch Changes
+
+- [#10](https://github.com/DavideCarvalho/adonis-agora-sail/pull/10) [`3005508`](https://github.com/DavideCarvalho/adonis-agora-sail/commit/300550828f14e78089115370e3c669f24fe49faf) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - `sail:install` reports the env wiring it actually performed. The AdonisJS codemods catch their own failures — a missing `@adonisjs/assembler`, no `tsconfig.json` in the app root, a `start/env.ts` without `Env.create`, a `.env` that does not exist yet — and report them through the logger rather than throwing, so "it did not throw" was never evidence of a write. Install now reads the files back and, when nothing changed, says so and prints the snippet to paste instead of claiming `start/env.ts validations added (…)` for a file it never touched. The degradation branch that message lives in was unreachable until now.
+  
+  Under `--json` the codemods are muted through their own `useLogger()` hook, so stdout stays the single parseable document the flag promises — their progress lines used to sit next to the report and break every consumer that pipes it into a parser.
+
+- [#10](https://github.com/DavideCarvalho/adonis-agora-sail/pull/10) [`3005508`](https://github.com/DavideCarvalho/adonis-agora-sail/commit/300550828f14e78089115370e3c669f24fe49faf) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Two exits now keep the one-JSON-document-per-command contract they were breaking. Declining `sail:down --volumes`'s confirmation printed a plain log line even under `--json`, which is the one output a consumer cannot parse; it reports `{ "status": "aborted", "message": … }` now. And `sail:sync-env --json` reported `"status": "synced"` while skipping an encrypted file and exiting `1` — the payload contradicted the exit code for the one consumer that reads both. It reports `"skipped"` in that case.
+  
+  Both were found by the new command-level test suite, which is the first thing in this package to exercise the commands rather than the modules under them.
+
+- [#10](https://github.com/DavideCarvalho/adonis-agora-sail/pull/10) [`3005508`](https://github.com/DavideCarvalho/adonis-agora-sail/commit/300550828f14e78089115370e3c669f24fe49faf) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Three scan corrections, all found by running the detector against real AdonisJS applications rather than hand-written snippets.
+  
+  `APP_NAME` no longer produces a note. Every stock `config/logger.ts` reads it and no starter kit declares it in `start/env.ts`, so sail was telling every user, on their very first install, to go fix a file that was already correct.
+  
+  A store selected through the environment (`default: env.get('LOCK_STORE')`, the shape `config/lock.ts`, `config/limiter.ts` and `config/session.ts` ship with) is reported as unresolvable instead of unselected. The value lives in `.env`, so no amount of reading the file settles it — and "select it and re-run install" is advice for something the user has probably already done.
+  
+  `drivers.redis(...)` counts as redis evidence, alongside `transports.redis(...)` and `admissions.redis(...)`. It is how `@adonisjs/queue` and bentocache name the same thing, and an app using either without `@adonisjs/redis` in its dependencies was missed entirely.
+
 ## 0.2.3
 
 ### Patch Changes
