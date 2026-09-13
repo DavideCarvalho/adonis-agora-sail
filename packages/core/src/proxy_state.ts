@@ -178,11 +178,13 @@ export function normalizeHostname(value: string): string | null {
 export const DOMAIN_ENV_KEY = 'SAIL_DOMAIN';
 
 /**
- * The hostnames this app answers on. `SAIL_DOMAIN` in `.env.local` or `.env`
- * wins when set, so a team can commit *which* domain the app uses while each
- * developer still decides *whether* to run the proxy at all; otherwise the
- * compose project name drives the default `<project>.localhost` /
- * `<project>.test` pair.
+ * The hostnames this app answers on. A `SAIL_DOMAIN` found anywhere in the
+ * dot-env loader priority wins — the same files, in the same order, that
+ * decide the `PORT` this domain routes to, so the two cannot come from
+ * different places. Committing it lets a team agree on *which* domain the app
+ * uses while each developer still decides *whether* to run the proxy at all;
+ * without it the compose project name drives the default
+ * `<project>.localhost` / `<project>.test` pair.
  */
 export async function resolveDomainHostnames(
   appRootPath: string,
