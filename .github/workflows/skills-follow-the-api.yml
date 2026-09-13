@@ -14,13 +14,15 @@ on:
     paths:
       - '.changeset/*.md'
 
-permissions:
-  contents: write
-  pull-requests: write
-
 jobs:
   update-skills:
     name: Update skills for this change
+    # Pullfrog mints its App installation token over OIDC, and it reads these
+    # at the job level -- a workflow-level block does not reach it.
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: write
     # A fork PR has no secrets and no push access to its head branch, so the
     # agent could neither run nor commit. The bot check keeps this job's own
     # commit from re-triggering it through `synchronize`, which would loop.
