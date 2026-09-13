@@ -5,7 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 
+import { generateProxyComposeFile, usesHostNetwork } from '../src/proxy.js';
 import { ensureProxyScaffold, writeRoute } from '../src/proxy_state.js';
 
 const execFileAsync = promisify(execFile);
@@ -39,6 +41,7 @@ if (!hasDocker && process.env['CI']) {
 
 /** Entrypoints are moved off 80/443: this asserts routing, not port binding. */
 const WEB_PORT = 18080;
+const SECURE_PORT = 18443;
 const PROJECT = `sail-it-${process.pid}`;
 
 /**
@@ -63,6 +66,46 @@ function request(host: string, path = '/'): Promise<{ status: number; body: stri
   });
 }
 
+/**
+ * Moves the proxy off 80/443, which a dev machine usually has spoken for.
+ *
+ * Where the move has to happen depends on how the proxy is attached: with host
+ * networking the entrypoint *is* the host port, while off the bridge the
+ * entrypoints stay put and the published mapping moves. Remapping the wrong
+ * one leaves docker publishing a port nothing listens on — which is a red
+ * suite on macOS and Windows, where the bridge is the only mode.
+ */
+function movePorts(compose: string, hostNetwork = usesHostNetwork()): string {
+  return hostNetwork
+    ? compose
+        .replace('--entrypoints.web.address=:80', `--entrypoints.web.address=:${WEB_PORT}`)
+        .replace(
+          '--entrypoints.websecure.address=:443',
+          `--entrypoints.websecure.address=:${SECURE_PORT}`,
+        )
+    : compose.replace("'80:80'", `'${WEB_PORT}:80'`).replace("'443:443'", `'${SECURE_PORT}:443'`);
+}
+
+describe('the fixture rewrite this suite runs on', () => {
+  // Linux is the only mode CI can exercise end to end, so the branch a macOS
+  // contributor hits is checked here instead of going unverified.
+  it('moves the entrypoints under host networking', () => {
+    const moved = movePorts(generateProxyComposeFile({ hostNetwork: true }), true);
+
+    expect(moved).toContain(`--entrypoints.web.address=:${WEB_PORT}`);
+    expect(moved).toContain(`--entrypoints.websecure.address=:${SECURE_PORT}`);
+  });
+
+  it('moves the published mapping off the bridge, leaving the entrypoints alone', () => {
+    const moved = movePorts(generateProxyComposeFile({ hostNetwork: false }), false);
+    const compose = parse(moved);
+
+    expect(compose.services.traefik.ports).toEqual([`${WEB_PORT}:80`, `${SECURE_PORT}:443`]);
+    expect(moved).toContain('--entrypoints.web.address=:80');
+    expect(moved).toContain('--entrypoints.websecure.address=:443');
+  });
+});
+
 describe.skipIf(!hasDocker)('the generated proxy config routes real traffic', () => {
   let app: Server;
   let composeFile: string;
@@ -86,10 +129,12 @@ describe.skipIf(!hasDocker)('the generated proxy config routes real traffic', ()
       home,
     });
 
-    const compose = (await readFile(composeFile, 'utf8'))
-      .replace('--entrypoints.web.address=:80', `--entrypoints.web.address=:${WEB_PORT}`)
-      .replace('--entrypoints.websecure.address=:443', '--entrypoints.websecure.address=:18443');
-    await writeFile(composeFile, compose, 'utf8');
+    // Move the proxy off 80/443, which a dev machine usually has spoken for.
+    // Where that move has to happen depends on how the proxy is attached: with
+    // host networking the entrypoint *is* the host port, while off the bridge
+    // the entrypoints stay put and the published mapping moves — remapping the
+    // wrong one leaves docker publishing a port nothing listens on.
+    await writeFile(composeFile, movePorts(await readFile(composeFile, 'utf8')), 'utf8');
 
     await execFileAsync('docker', [
       'compose',
