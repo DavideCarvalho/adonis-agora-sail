@@ -10,10 +10,15 @@ description: >
 metadata:
   type: core
   library: "@adonis-agora/sail"
-  library_version: "0.1.0"
+  library_version: "0.2.3"
   framework: adonisjs
 sources:
   - "DavideCarvalho/adonis-agora-sail:docs/getting-started.mdx"
+  - "DavideCarvalho/adonis-agora-sail:docs/commands.mdx"
+  - "DavideCarvalho/adonis-agora-sail:docs/worktrees.mdx"
+  - "DavideCarvalho/adonis-agora-sail:docs/sharing.mdx"
+  - "DavideCarvalho/adonis-agora-sail:docs/varlock.mdx"
+  - "DavideCarvalho/adonis-agora-sail:docs/agents.mdx"
 ---
 
 # Sail basics: services up, ports per worktree
@@ -33,6 +38,13 @@ node ace sail:up        # start + wait for healthchecks, sync ports, then print 
 `node ace sail:up && node ace migration:run` works with no sleeps: `up`
 waits for healthchecks before returning, and re-running it is a silent
 success.
+
+Before it touches docker, `up` probes the host ports the stack needs and
+refuses to start when another stack already holds one, naming the holder
+(`:5621 (held by shop-main-postgres-1)`). Ports your own running containers
+publish are subtracted, which is why re-running `up` on a live stack still
+succeeds. Starting cross-wired onto someone else's database is the failure
+this prevents.
 
 ## The one rule: ask sail for ports
 
@@ -78,9 +90,9 @@ detected. Existing declarations and values are never overwritten.
 node ace sail:ps                # container state, health, published ports
 node ace sail:logs --tail 100              # captured text (or --json)
 node ace sail:logs redis --since 10m       # one service, recent logs
-node ace sail:exec redis -- redis-cli ping # one-shot command, exit code propagates
+node ace sail:exec redis -- redis-cli ping # one-shot, exits with the child's own code
 node ace sail:psql                         # psql REPL (or -- -c 'select 1')
-node ace sail:mysql -- -e 'show tables'    # one-shot, exit code propagates
+node ace sail:mysql -- -e 'show tables'    # one-shot, exits with the child's own code
 node ace sail:redis -- ping                # redis-cli REPL (or one-shot)
 node ace sail:share                        # public tunnel URL for the app
 node ace sail:down               # stop this worktree's stack
@@ -97,6 +109,9 @@ projects are never touched.
   terminal; with args (`-- -c 'select 1'`) they run a captured one-shot
   with a propagated exit code — the form agents must use, since a bare
   invocation refuses `--json` and fails without a TTY instead of hanging.
+  Ace flags go **before** the `--`; everything after it is handed to the
+  client, so `node ace sail:psql --json -- -c 'select 1'` is right and a
+  trailing `--json` would reach `psql` instead of ace.
   They connect over the container network, so worktree port offsets never
   matter, and they refuse to run for services `sail:install` did not enable.
 - `sail:share` exposes the worktree's `serve` port on a public
@@ -117,7 +132,12 @@ projects are never touched.
 
 Sail auto-detects varlock (`.env.schema` or the `varlock` dependency).
 `install` additionally declares the service keys in `.env.schema`
-(append-only, your types win); the port sync targets the same
+(append-only, your types win) and emits two `@auditExtraPatterns()` root
+decorators, so `varlock audit` stops flagging every key as unreferenced:
+its built-in patterns only recognise bare `process.env.X`, which an Adonis
+app never writes — config and app code use `env.get('DB_HOST')`, and the
+keys the framework reads itself appear only as `KEY: Env.schema.…()` in
+`start/env.ts`. The port sync targets the same
 `.env.local` every app uses, so `varlock run --` keeps working unchanged:
 
 ```bash
@@ -129,7 +149,11 @@ varlock run -- node ace migration:run      # same for migrations
 Rules: `.env.schema` holds shape + main-checkout defaults; `.env.local`
 holds the live per-worktree ports inside `# sail:start`/`# sail:end` —
 everything else in the file is preserved. Encrypted `.env.local` is
-detected and skipped with a warning instead of corrupted. Agents read
+detected and skipped instead of corrupted, and both commands say so in the
+same words — but they differ in severity on purpose: `sail:sync-env` exits
+`1`, because skipping is its one job failing, while `sail:up` warns and
+succeeds, because the stack did come up. `sync-env` exits `1` under `--json`
+too, which matters for the consumer that cannot read the warning. Agents read
 `.env.schema` for context (no secrets) plus `sail:info --json` for live
 ports.
 
