@@ -26,9 +26,28 @@ Every healthcheck uses `interval: 5s`, `timeout: 5s`, `retries: 10`. `sail:up`
 runs `docker compose up --detach --wait`, so the command only returns once
 those checks pass — you never need a `sleep` before `migration:run`.
 
-The host ports above are **base** ports, used as-is in the main checkout. In a
-git worktree every one of them shifts by the same deterministic offset; see
-[Worktrees](/docs/sail/worktrees).
+### Host ports: fixed per app, shifted per worktree
+
+The host ports above are **base** ports, and the main checkout always uses them
+as-is — your app's Postgres is on `5432`, its Redis on `6379`, and so on, every
+time. Only a git worktree moves them: every service shifts by the same
+deterministic offset, so a worktree's stack runs next to the main checkout's
+without clashing; see [Worktrees](/docs/sail/worktrees).
+
+What separates two stacks is not the same for every resource:
+
+| | Main checkout of app A vs. app B | Main checkout vs. a worktree of the same app |
+| --- | --- | --- |
+| Containers, volumes, network | separate (project named after each app) | separate (`<app>-<worktree>` project) |
+| Host ports | **the same base ports** | shifted by the worktree offset |
+
+So two **different apps** on one machine get their own containers and data, but
+their main checkouts ask for the same host ports — the offset is derived from
+the worktree directory name only, never from the app name. Run one app's stack
+at a time (`node ace sail:down` in the other first), or work on one of them from
+a worktree. `sail:up` catches the clash before starting anything and names the
+container holding the port; see
+[Another stack holds a host port](/docs/sail/troubleshooting#another-stack-holds-a-host-port).
 
 ### Credentials and dashboards
 
