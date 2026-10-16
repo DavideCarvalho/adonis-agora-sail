@@ -143,6 +143,12 @@ The probe only covers the services your `compose.yml` declares, at this
 worktree's offset — an unrelated MySQL on `3306` never blocks a postgres-only
 stack.
 
+The holder can also be **another app's** stack: main checkouts always use the
+base ports, so two different sail apps on one machine cannot both be up from
+their main checkouts if they share a service. Stop the other app's stack, or
+run one of them from a worktree. See
+[Host ports](/docs/sail/services#host-ports-fixed-per-app-shifted-per-worktree).
+
 ### Worktree ports do not shift
 
 No error — this one is silent. Worktree detection needs **git ≥ 2.36**
