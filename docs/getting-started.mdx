@@ -12,7 +12,7 @@ import { Steps, Step } from 'fumadocs-ui/components/steps';
 | Requirement | Why |
 | --- | --- |
 | Docker Engine with the **Compose v2 plugin** (`docker compose version`) | Sail shells out to `docker compose`; the legacy `docker-compose` binary is not used. Docker Desktop, Colima, OrbStack and a plain Linux daemon all work. |
-| **Node.js ≥ 20.6** | The package's `engines` floor. |
+| **Node.js ≥ 22** | The package's `engines` floor (22, 24 and 26 are tested in CI). |
 | **AdonisJS ^7.3** | Peer dependency — sail registers ace commands, nothing else. |
 | **git ≥ 2.36** (optional) | Only for worktree isolation: sail needs `git worktree list --porcelain -z`. Older git silently behaves as the main checkout. |
 
