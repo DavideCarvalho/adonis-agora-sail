@@ -1,5 +1,11 @@
 # @adonis-agora/sail
 
+## 0.4.0
+
+### Minor Changes
+
+- [#15](https://github.com/DavideCarvalho/adonis-agora-sail/pull/15) [`387aafc`](https://github.com/DavideCarvalho/adonis-agora-sail/commit/387aafcc06756e7b1be21a2956e422283692f057) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Drop Node.js 20 and 22: `engines.node` is now `>=24`. Node 20 reached end-of-life on 2026-04-30, and AdonisJS 7, which these packages require as a peer, needs Node 24 or later (`@adonisjs/core` declares `engines.node >=24.0.0`). The supported lines are the ones Node still maintains that AdonisJS 7 accepts: 24 and 26, both tested in CI.
+
 ## 0.3.0
 
 ### Minor Changes
