@@ -1,5 +1,7 @@
 # `@adonis-agora/sail`
 
+[![npm version](https://img.shields.io/npm/v/@adonis-agora/sail)](https://www.npmjs.com/package/@adonis-agora/sail) [![npm downloads](https://img.shields.io/npm/dm/@adonis-agora/sail)](https://www.npmjs.com/package/@adonis-agora/sail) [![CI](https://github.com/DavideCarvalho/adonis-agora-sail/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/DavideCarvalho/adonis-agora-sail/actions/workflows/ci.yml) [![license](https://img.shields.io/npm/l/@adonis-agora/sail)](https://www.npmjs.com/package/@adonis-agora/sail)
+
 Docker-powered local dev services for AdonisJS. Sail runs Postgres, MySQL,
 Redis, Mailpit and MinIO in Docker while the app itself stays on the host —
 and every git worktree gets isolated containers with deterministic,
