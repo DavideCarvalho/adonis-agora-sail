@@ -1,5 +1,7 @@
 # `@adonis-agora/sail`
 
+[![npm version](https://img.shields.io/npm/v/@adonis-agora/sail)](https://www.npmjs.com/package/@adonis-agora/sail) [![npm downloads](https://img.shields.io/npm/dm/@adonis-agora/sail)](https://www.npmjs.com/package/@adonis-agora/sail) [![CI](https://github.com/DavideCarvalho/adonis-agora-sail/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/DavideCarvalho/adonis-agora-sail/actions/workflows/ci.yml) [![license](https://img.shields.io/npm/l/@adonis-agora/sail)](https://www.npmjs.com/package/@adonis-agora/sail)
+
 > Docker-powered local dev services for **AdonisJS** — worktree-native,
 > agent-friendly. Part of the [Agora](https://github.com/DavideCarvalho) ecosystem.
 
@@ -7,7 +9,7 @@
 
 | Package | What |
 |---|---|
-| [`@adonis-agora/sail`](./packages/core) | `sail:*` ace commands: auto-detected `compose.yml`, per-worktree isolated stacks with deterministic ports, service shells, tunnels, JSON output for agents |
+| [`@adonis-agora/sail`](./packages/core) [![npm](https://img.shields.io/npm/v/@adonis-agora/sail)](https://www.npmjs.com/package/@adonis-agora/sail) | `sail:*` ace commands: auto-detected `compose.yml`, per-worktree isolated stacks with deterministic ports, service shells, tunnels, JSON output for agents |
 
 ```bash
 node ace add @adonis-agora/sail
