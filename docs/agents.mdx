@@ -149,7 +149,7 @@ Sail's error hints are commands, not advice. The pattern is consistent:
 ```json
 {
   "error": "Could not detect any service from package.json or config/*.ts",
-  "hint": "Re-run with explicit services, e.g. node ace sail:install --services=postgres --services=redis (valid: postgres, mysql, redis, mailpit, minio)"
+  "hint": "Re-run with explicit services, e.g. node ace sail:install --services=postgres --services=redis (valid: postgres, mysql, redis, mailpit, rustfs, seaweedfs, garage, minio)"
 }
 ```
 
@@ -162,10 +162,10 @@ form. An agent can usually recover by executing the `hint` verbatim.
 ## The managed `AGENTS.md` section
 
 `sail:install` writes (or refreshes) a section in the app's `AGENTS.md`,
-delimited by `<!-- sail:start -->` and `<!-- sail:end -->`:
+delimited by `<!-- sail:start checksum=… -->` and `<!-- sail:end -->`:
 
 ```md
-<!-- sail:start -->
+<!-- sail:start checksum=0123abcd4567 -->
 ## Sail (local dev services)
 
 - Start services with `node ace sail:up` (idempotent, waits for healthchecks); stop with `node ace sail:down`.
@@ -184,12 +184,18 @@ Update rules:
 - No file, or an empty one: sail creates it containing just the section.
 - File without the markers: the section is appended at the end, your content
   untouched.
-- Markers present: only the text between them is replaced — everything before
-  and after is preserved, and a re-run with no changes rewrites nothing
-  (install reports `unchanged`).
-- Markers removed: sail can no longer find its section and appends a fresh
-  one on the next install, leaving your edited copy in place. To own the
-  wording permanently, move your version outside the markers.
+- Markers present and the text between them still matches the checksum in the
+  start marker: sail wrote it and nobody changed it since, so it is refreshed
+  to the current wording — everything before and after is preserved, and a
+  re-run with no changes rewrites nothing (install reports `unchanged`).
+- Markers present but the text was edited — translated, reworded, extended:
+  sail leaves the file byte for byte as it is and reports
+  `kept (edited by hand — …)`. Your version is yours from then on, markers
+  and all.
+- Markers without a checksum (written by sail 0.4 and earlier): refreshed only
+  while the text is still the stock wording, kept otherwise.
+- To get the stock text back, delete the section, markers included, and re-run
+  install — it is appended fresh.
 
 ## The `sail-basics` skill
 

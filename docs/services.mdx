@@ -1,12 +1,13 @@
 ---
 title: Services
-description: The five services sail can run — images, ports, credentials, healthchecks and the env keys each one owns — plus the anatomy and merge rules of the generated compose.yml.
+description: The services sail can run — images, ports, credentials, healthchecks and the env keys each one owns, the four object storage backends — plus the anatomy and merge rules of the generated compose.yml.
 icon: Container
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-Sail ships a fixed catalog of five services. There is no plugin API and no
+Sail ships a fixed catalog of services — four of them interchangeable object
+storage backends, of which a stack runs one. There is no plugin API and no
 custom service registry: the catalog is a data table in the package, and
 everything else — detection, compose generation, port planning, `sail:info`
 output, `.env` wiring — is derived from it. Anything outside the catalog you
@@ -16,15 +17,49 @@ add to `compose.yml` by hand, and sail leaves it alone.
 
 | Service | Image | Host port(s) | Container port | Volume | Healthcheck |
 | --- | --- | --- | --- | --- | --- |
-| `postgres` | `postgres:17` | `5432` | `5432` | `sail-postgres:/var/lib/postgresql/data` | `pg_isready -U sail -d app` |
+| `postgres` | `postgres:17` (`pgvector/pgvector:pg17` when a migration creates the `vector` extension) | `5432` | `5432` | `sail-postgres:/var/lib/postgresql/data` | `pg_isready -U sail -d app` |
 | `mysql` | `mysql:8` | `3306` | `3306` | `sail-mysql:/var/lib/mysql` | `mysqladmin ping -h 127.0.0.1 -ppassword` |
 | `redis` | `redis:7-alpine` | `6379` | `6379` | `sail-redis:/data` | `redis-cli ping` |
 | `mailpit` | `axllent/mailpit:latest` | `1025` (smtp), `8025` (ui) | `1025`, `8025` | — | — |
-| `minio` | `minio/minio:latest` | `9000` (s3), `8900` (console) | `9000`, `8900` | `sail-minio:/data` | `mc ready local` |
+| `rustfs` | `rustfs/rustfs:1.0.3` | `9000` (s3), `9001` (console) | `9000`, `9001` | `sail-rustfs:/data` | `curl -fsS http://127.0.0.1:9000/health` |
+| `seaweedfs` | `chrislusf/seaweedfs:4.48` | `8333` (s3), `8888` (filer) | `8333`, `8888` | `sail-seaweedfs:/data` | `curl -fsS http://127.0.0.1:8333/healthz` |
+| `garage` | `dxflrs/garage:v2.4.1` | `3900` (s3) | `3900` | `sail-garage:/var/lib/garage` | `/garage status` |
+| `minio` | `cgr.dev/chainguard/minio:latest` | `9000` (s3), `8900` (console) | `9000`, `8900` | `sail-minio:/data` | `mc ready local` |
 
 Every healthcheck uses `interval: 5s`, `timeout: 5s`, `retries: 10`. `sail:up`
 runs `docker compose up --detach --wait`, so the command only returns once
 those checks pass — you never need a `sleep` before `migration:run`.
+
+Images are overridable per app with `sail.images` in `package.json` (see
+[Install](/docs/sail/install#preferences-in-packagejson)); that only affects
+blocks install generates from then on.
+
+### Object storage: four backends, one slot
+
+`rustfs`, `seaweedfs`, `garage` and `minio` all serve the S3 API, the same
+`local` bucket and the same app env, so `config/drive.ts` does not care which
+one runs. New installs get **RustFS**; pick another with
+`node ace sail:install --object-storage=<backend>`, which also records it in
+`package.json` (`"sail": { "objectStorage": "garage" }`). The reasoning behind
+the default is in the [repository README](https://github.com/DavideCarvalho/adonis-agora-sail#object-storage-backends).
+
+| | RustFS | SeaweedFS | Garage | MinIO |
+| --- | --- | --- | --- | --- |
+| Licence | Apache-2.0 | Apache-2.0 | AGPL-3.0 | AGPL-3.0, repository archived |
+| Bucket created by | `sail:up` (one signed `PUT`) | the container (`S3_BUCKET`) | the container (`--default-bucket`) | `sail:up` (`mc mb`) |
+| Dashboard | console, `/rustfs/console/` | filer browser, `/buckets/` | none | console |
+| Credentials | `sail` / `password` | `sail` / `password` | `sail-garage-key` / `sail-garage-password` | `sail` / `password` |
+| Idle RAM (measured) | ~30 MB | ~95 MB | ~5 MB | ~60 MB |
+| Image size | ~420 MB | ~720 MB | ~100 MB | ~235 MB |
+
+Garage needs Docker Compose **2.23.1 or later**: its config file is inlined in
+`compose.yml` through `configs: … content:`, since the image (`FROM scratch`, no
+shell) cannot template one. Its access key is longer because Garage rejects key
+ids under 8 characters and secrets under 16.
+
+All four answer with region `us-east-1` and need path-style URLs
+(`forcePathStyle: true`): `http://127.0.0.1:9000/local/key`, not
+`http://local.127.0.0.1:9000/key`.
 
 ### Host ports: fixed per app, shifted per worktree
 
@@ -58,7 +93,7 @@ predictable on purpose so `sail:install` needs zero configuration:
 | --- | --- |
 | User | `sail` |
 | Password | `password` |
-| Database / bucket | `app` (Postgres, MySQL), `local` (MinIO bucket) |
+| Database / bucket | `app` (Postgres, MySQL), `local` (object storage bucket) |
 
 <Callout type="warn">
 These credentials are for local development only. The stack binds to the host,
@@ -67,21 +102,27 @@ staging or production app at a sail stack, and see
 [Sharing](/docs/sail/sharing) before exposing a port to the network.
 </Callout>
 
-Two services expose a browser UI, at the resolved (offset-aware) host port:
+Browser UIs, at the resolved (offset-aware) host port:
 
 | Dashboard | URL in the main checkout |
 | --- | --- |
 | Mailpit inbox | `http://localhost:8025` |
+| RustFS console | `http://localhost:9001/rustfs/console/` |
+| SeaweedFS filer | `http://localhost:8888/buckets/` |
 | MinIO console | `http://localhost:8900` |
 
-`node ace sail:info` prints both with the current worktree's ports already
-applied, so you never compute an offset by hand.
+`node ace sail:info` prints them with the current worktree's ports already
+applied, so you never compute an offset by hand. Garage has no web UI.
 
 Container-side these arrive as `POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_DB`,
 `MYSQL_USER`/`MYSQL_PASSWORD`/`MYSQL_DATABASE`/`MYSQL_ROOT_PASSWORD` (root shares
-the same password) and `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD`. Redis and Mailpit
-take no environment at all — sail's Redis runs **without** auth, so no
-`REDIS_PASSWORD` is ever set.
+the same password), `RUSTFS_ACCESS_KEY`/`RUSTFS_SECRET_KEY`,
+`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`S3_BUCKET` (SeaweedFS),
+`GARAGE_DEFAULT_ACCESS_KEY`/`GARAGE_DEFAULT_SECRET_KEY`/`GARAGE_DEFAULT_BUCKET`
+and `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD`. Redis and Mailpit take no
+environment at all — sail's Redis runs **without** auth, which is why the app
+env carries an empty `REDIS_PASSWORD`: it overrides a production password in
+`.env` that would otherwise be sent to a server that has none.
 
 ## Env keys sail owns
 
@@ -105,13 +146,20 @@ write into `.env.local`.
 | | `DB_DATABASE` | `app` |
 | `redis` | `REDIS_HOST` | `127.0.0.1` |
 | | `REDIS_PORT` | `6379` + offset |
+| | `REDIS_PASSWORD` | empty — left out when `start/env.ts` declares it required, since an empty value would fail boot |
 | `mailpit` | `SMTP_HOST` | `127.0.0.1` |
 | | `SMTP_PORT` | `1025` + offset |
-| `minio` | `AWS_ACCESS_KEY_ID` | `sail` |
-| | `AWS_SECRET_ACCESS_KEY` | `password` |
+| object storage | `AWS_ACCESS_KEY_ID` | `sail` (Garage: `sail-garage-key`) |
+| | `AWS_SECRET_ACCESS_KEY` | `password` (Garage: `sail-garage-password`) |
 | | `AWS_REGION` | `us-east-1` |
 | | `S3_BUCKET` | `local` |
-| | `S3_ENDPOINT` | `http://localhost:9000` (+ offset) |
+| | `S3_ENDPOINT` | `http://127.0.0.1:` + the backend's s3 port + offset (MinIO: `http://localhost:9000`) |
+
+The object storage keys are the stock names; sail writes them under **the names
+your `config/drive.ts` s3 disk actually reads** — `accessKeyId:
+env.get('S3_ACCESS_KEY')` gets `S3_ACCESS_KEY=sail`, a literal region gets no
+key at all, and `forcePathStyle: env.get('S3_PATH_STYLE')` gets
+`S3_PATH_STYLE=true`. See [Install](/docs/sail/install#startenvts).
 
 Hosts are always `127.0.0.1`: the app runs on the host, not in a container, so
 it talks to published ports rather than compose service names. Only these keys
@@ -120,7 +168,9 @@ are sail's. Everything else in your `.env` — `MAIL_MAILER`, `DRIVE_DISK`,
 no stock shape to guess with.
 
 <Callout type="info">
-`postgres` and `mysql` claim the **same** `DB_*` keys. Enabling both is
+`postgres` and `mysql` claim the **same** `DB_*` keys, and both always write
+`DB_USER` / `DB_PASSWORD` / `DB_DATABASE` along with the port, so `.env.local`
+never pairs sail's port with production credentials from `.env`. Enabling both is
 supported at the container level (two databases, two ports), but the merged
 app env only holds one `DB_PORT` — the later service in the list wins. Pick
 one as the app's database and reach the other through
@@ -130,8 +180,8 @@ one as the app's database and reach the other through
 ## The generated `compose.yml`
 
 `sail:install` writes a single `compose.yml` at the app root. With `postgres`,
-`mailpit` and `minio` selected it looks like this (Redis and MySQL follow the
-same shape):
+`mailpit` and `rustfs` selected it looks like this (Redis, MySQL and the other
+backends follow the same shape; Garage adds a top-level `configs:` entry):
 
 ```yaml
 # Managed by @adonis-agora/sail (`node ace sail:install`).
@@ -165,36 +215,37 @@ services:
     ports:
       - ${SAIL_MAILPIT_SMTP_PORT:-1025}:1025
       - ${SAIL_MAILPIT_UI_PORT:-8025}:8025
-  minio:
-    image: minio/minio:latest
+  rustfs:
+    image: rustfs/rustfs:1.0.3
     ports:
-      - ${SAIL_MINIO_PORT:-9000}:9000
-      - ${SAIL_MINIO_CONSOLE_PORT:-8900}:8900
-    command: server /data --console-address ":8900"
+      - ${SAIL_RUSTFS_PORT:-9000}:9000
+      - ${SAIL_RUSTFS_CONSOLE_PORT:-9001}:9001
     environment:
-      MINIO_ROOT_USER: sail
-      MINIO_ROOT_PASSWORD: password
+      RUSTFS_ACCESS_KEY: sail
+      RUSTFS_SECRET_KEY: password
+      RUSTFS_CONSOLE_ENABLE: "true"
     volumes:
-      - sail-minio:/data
+      - sail-rustfs:/data
     healthcheck:
       test:
         - CMD
-        - mc
-        - ready
-        - local
+        - curl
+        - -fsS
+        - http://127.0.0.1:9000/health
       interval: 5s
       timeout: 5s
       retries: 10
 volumes:
   sail-postgres: null
-  sail-minio: null
+  sail-rustfs: null
 ```
 
 **Port interpolation.** Every published port is
-`${SAIL_<SERVICE>_PORT:-<base>}:<container>`. Sail sets those variables — all
-seven of them (`SAIL_POSTGRES_PORT`, `SAIL_MYSQL_PORT`, `SAIL_REDIS_PORT`,
-`SAIL_MAILPIT_SMTP_PORT`, `SAIL_MAILPIT_UI_PORT`, `SAIL_MINIO_PORT`,
-`SAIL_MINIO_CONSOLE_PORT`) — in the environment of every `docker compose` call
+`${SAIL_<SERVICE>_PORT:-<base>}:<container>`. Sail sets those variables — every
+one in the catalog (`SAIL_POSTGRES_PORT`, `SAIL_MYSQL_PORT`, `SAIL_REDIS_PORT`,
+`SAIL_MAILPIT_SMTP_PORT`, `SAIL_MAILPIT_UI_PORT`, `SAIL_RUSTFS_PORT`,
+`SAIL_RUSTFS_CONSOLE_PORT`, `SAIL_SEAWEEDFS_PORT`, `SAIL_SEAWEEDFS_FILER_PORT`,
+`SAIL_GARAGE_PORT`, `SAIL_MINIO_PORT`, `SAIL_MINIO_CONSOLE_PORT`) — in the environment of every `docker compose` call
 it makes, offset already applied; a bare `docker compose up` outside sail has
 them unset and falls back to the base ports. That is what makes the file
 **worktree-agnostic and committable**: byte-identical in every checkout, no
@@ -260,20 +311,30 @@ up. The app sends to `SMTP_HOST`/`SMTP_PORT` with no auth and no TLS; every
 message is captured, nothing leaves your machine, and you read it in the inbox
 UI on the `ui` port. With no volume, `sail:down` empties the mailbox.
 
-**MinIO.** The container runs `server /data --console-address ":8900"`, which
-is why the console has a stable container port to publish. There is **no init
-container and no bucket bootstrap** — sail never creates the `local` bucket for
-you. Selecting MinIO therefore prints a setup note at install time:
+**Object storage.** The `local` bucket exists once `sail:up` returns.
+SeaweedFS (`S3_BUCKET`) and Garage (`--single-node --default-bucket`, which
+also lays out the one-node cluster and imports the key) create it themselves at
+boot, skipping whatever is already done; for RustFS and MinIO, which cannot,
+`sail:up` runs one idempotent step inside the container after the healthchecks
+pass — a SigV4-signed `PUT /local` with the image's own `curl`, and `mc mb
+--ignore-existing`. It runs on every `up`, reads the credentials from the
+container's environment (so hand-edited ones still work), and a failure fails
+`up` with the container's output.
+
+What sail does not do is edit `config/drive.ts`. The stock s3 disk has neither
+an `endpoint` (so the SDK would talk to AWS) nor `forcePathStyle: true`, so
+install prints, only for what is missing:
 
 ```text
-MinIO: add `endpoint: env.get('S3_ENDPOINT')` to the s3 disk in config/drive.ts
-and create the 'local' bucket in the MinIO console
+Object storage: add `endpoint: env.get('S3_ENDPOINT')` and `forcePathStyle: true`
+to the s3 disk in config/drive.ts — the local backend needs both
 ```
 
-Both steps are manual by design — the stock `config/drive.ts` stub has no
-`endpoint` key to override, and sail does not rewrite third-party config
-bodies. Open the console, log in with `sail` / `password`, create a bucket
-named `local`, and the `S3_*` env sail wrote will just work.
+**MinIO** stays for existing stacks, but MinIO stopped publishing community
+images in October 2025 and archived its repository in April 2026, so
+`minio/minio` can no longer be pulled. New MinIO blocks use Chainguard's free
+rebuild, `cgr.dev/chainguard/minio:latest`; install notes an existing
+`minio/minio` image and the two ways out (that image, or another backend).
 
 **Postgres / MySQL / Redis.** `sail:psql`, `sail:mysql` and `sail:redis` open
 the service's own client *inside* the container (`docker compose exec`), so
