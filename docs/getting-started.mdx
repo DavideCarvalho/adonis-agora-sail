@@ -12,7 +12,7 @@ import { Steps, Step } from 'fumadocs-ui/components/steps';
 | Requirement | Why |
 | --- | --- |
 | Docker Engine with the **Compose v2 plugin** (`docker compose version`) | Sail shells out to `docker compose`; the legacy `docker-compose` binary is not used. Docker Desktop, Colima, OrbStack and a plain Linux daemon all work. |
-| **Node.js ≥ 24** | The package's `engines` floor (24 and 26 are tested in CI; AdonisJS 7 requires 24+). |
+| **Node.js ≥ 22** | The package's `engines` floor (22, 24 and 26 are tested in CI). Sail itself uses nothing newer than Node 22; `@adonisjs/core` 7 declares `engines.node >=24`, so on 22 your package manager may warn about the framework, not about sail. |
 | **AdonisJS ^7.3** | Peer dependency — sail registers ace commands, nothing else. |
 | **git ≥ 2.36** (optional) | Only for worktree isolation: sail needs `git worktree list --porcelain -z`. Older git silently behaves as the main checkout. |
 
@@ -85,7 +85,7 @@ node ace sail:info   # ports, dashboards and the connection env
 ```
 
 `sail:info` is the source of truth for how to reach each service. If you run
-Mailpit or MinIO, it prints their dashboard URLs too.
+Mailpit or an object storage backend with a console, it prints their dashboard URLs too.
 
 </Step>
 </Steps>
@@ -175,7 +175,7 @@ corrupted. Full reference: [Varlock](/docs/sail/varlock).
 Inside an AI coding agent every command defaults to JSON, never prompts, and
 stays idempotent with meaningful exit codes. If `install` cannot detect
 anything it fails with the exact `--services=` flags to re-run. `install`
-keeps an `AGENTS.md` section (`<!-- sail:start -->`) describing this
+keeps an `AGENTS.md` section (`<!-- sail:start … -->`) describing this
 workflow, and the `sail-basics` skill shipped in the package teaches it: ask
 sail for ports, sync before migrating, poll logs with `--tail` instead of
 `--follow`. See [AI agents](/docs/sail/agents).
