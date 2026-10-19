@@ -55,7 +55,7 @@ teammates on the same worktree name get the same ports). Query, don't guess:
 ```bash
 node ace sail:info              # human summary: ports, dashboards, app env
 node ace sail:info --json       # full stack object (default inside agents)
-eval $(node ace sail:info --env)  # export DB_/REDIS_/SMTP_/AWS_ vars (fallback)
+eval $(node ace sail:info --env)  # export DB_/REDIS_/SMTP_/S3_/AWS_ vars (fallback)
 ```
 
 No `eval` needed in the normal flow: `sail:up` / `sail:sync-env` write
@@ -82,10 +82,12 @@ env.get('DRIVE_DISK')`, the stock drive config) is reported, not
 provisioned. Object storage is one slot with four backends — `rustfs`
 (default), `seaweedfs`, `garage`, `minio`; `--object-storage=<backend>`
 picks one and asks for it. `--exclude=<service>` (or `object-storage`)
-keeps a service out of detection. Both persist under `sail` in
+keeps a service out of detection (`--services` still overrides it). Both persist under `sail` in
 `package.json`, next to `images` overrides, so plain re-runs honor them.
-A migration that creates the `vector` extension gets
-`pgvector/pgvector:pg17` instead of `postgres:17`.
+A migration that creates the `vector` extension gets the pgvector build
+of the configured Postgres major (`pgvector/pgvector:pg17` for the default
+`postgres:17`, `sail.images.postgres` overrides it). Existing blocks are
+never rewritten; install notes the image to switch to instead.
 
 Then it wires, all append-only: missing `start/env.ts` validations via
 the codemods (stock first-party shapes; `MAIL_MAILER`/`DRIVE_DISK` are
@@ -95,9 +97,10 @@ detected. Existing declarations and values are never overwritten.
 Object storage keys follow the names the app's s3 disk reads
 (`env.get('S3_ACCESS_KEY')` → `S3_ACCESS_KEY`), and their validations are
 `.optional()` so production boots without them. `sail:up` creates the
-`local` bucket (idempotently) and writes an empty `REDIS_PASSWORD` to
-`.env.local`, because sail's Redis has no auth. `.env` / `.env.example`
-always end with a newline after install.
+`local` bucket (idempotently) and writes `REDIS_PASSWORD=` (empty) to
+`.env.local`, because sail's Redis has no auth — omitted when
+`start/env.ts` declares it required, where an empty value would fail boot.
+Files install changed in `.env` / `.env.example` end with a newline.
 `node ace sail:info` shows the evidence per service plus any notes
 (sqlite, memory stores, the s3 disk's `endpoint` / `forcePathStyle`).
 
