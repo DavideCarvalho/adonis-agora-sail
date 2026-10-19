@@ -3,7 +3,21 @@ import type { GitWorktree } from '@poppinss/utils';
 /**
  * Names of the services sail knows how to run.
  */
-export type SailServiceName = 'postgres' | 'mysql' | 'redis' | 'mailpit' | 'minio';
+export type SailServiceName =
+  | 'postgres'
+  | 'mysql'
+  | 'redis'
+  | 'mailpit'
+  | 'rustfs'
+  | 'seaweedfs'
+  | 'garage'
+  | 'minio';
+
+/**
+ * The S3-compatible object storage backends sail can run. They fill the same
+ * slot — one per stack — and all serve the env keys of an AdonisJS `s3` disk.
+ */
+export type ObjectStorageBackend = 'rustfs' | 'seaweedfs' | 'garage' | 'minio';
 
 /**
  * A host port a service publishes. The compose file interpolates
@@ -31,8 +45,16 @@ export interface SailServiceDefinition {
   summary: string;
   image: string;
   ports: SailPortDefinition[];
+  /** Overrides the image's command (`command:` in compose). */
+  command?: string | string[];
   /** Environment for the container itself. */
   environment: Record<string, string>;
+  /**
+   * Inline config files (compose `configs:` with `content:`), mounted at
+   * `target`. Garage needs one because its image has no shell to template
+   * a file at boot.
+   */
+  configs?: { name: string; target: string; content: string }[];
   /** Named volumes as `volume-name:/container/path`. */
   volumes: string[];
   healthcheck?: {
@@ -41,6 +63,12 @@ export interface SailServiceDefinition {
     timeout: string;
     retries: number;
   };
+  /**
+   * One-shot, idempotent setup `sail:up` runs inside the container once the
+   * healthchecks pass (`docker compose exec -T <service> …`) — e.g. creating
+   * the bucket on a backend that cannot do it from its own environment.
+   */
+  bootstrap?: { description: string; command: string[] };
   /**
    * Dependencies in the app's package.json that imply this service is wanted.
    * Any match selects the service during auto-detection.

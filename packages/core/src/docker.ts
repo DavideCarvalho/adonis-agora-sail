@@ -3,7 +3,12 @@ import { readFile } from 'node:fs/promises';
 
 import { servicesInComposeFile } from './compose_file.js';
 import { resolveHostPorts } from './ports.js';
-import { type ComposeProject, parseComposeProjects } from './prune.js';
+import {
+  type ComposeProject,
+  type ComposeVolume,
+  parseComposeProjects,
+  parseComposeVolumes,
+} from './prune.js';
 import { SERVICES } from './services.js';
 import { isPortOpen } from './share.js';
 import type { SailContext, SailServiceName, SailServiceStatus } from './types.js';
@@ -279,15 +284,46 @@ export class DockerCompose {
   }
 
   /**
-   * Lists every compose project on the daemon, parsed into
+   * Lists every compose project on the daemon — stopped ones included, since
+   * a deleted worktree's stack is as often stopped as running — parsed into
    * {@link ComposeProject} entries.
    */
   async lsProjects(): Promise<ComposeProject[]> {
-    const result = await this.runGlobal(['ls', '--format', 'json']);
+    const result = await this.runGlobal(['ls', '--all', '--format', 'json']);
     if (result.exitCode !== 0) {
       throw new Error(`docker compose ls failed: ${result.stderr.trim()}`);
     }
     return parseComposeProjects(result.stdout);
+  }
+
+  /**
+   * Every volume a compose project created (labelled
+   * `com.docker.compose.project`), with the project it belongs to. Volumes
+   * outlive their containers, so this is the only way to find the data of a
+   * stack that was stopped and whose worktree was deleted afterwards.
+   */
+  async lsVolumes(): Promise<ComposeVolume[]> {
+    const result = await this.runDocker([
+      'volume',
+      'ls',
+      '--filter',
+      'label=com.docker.compose.project',
+      '--format',
+      '{{json .}}',
+    ]);
+    if (result.exitCode !== 0) {
+      throw new Error(`docker volume ls failed: ${result.stderr.trim()}`);
+    }
+    return parseComposeVolumes(result.stdout);
+  }
+
+  /**
+   * Deletes the named volumes (their data!). Used by `sail:prune --volumes`
+   * for volumes `compose down --volumes` cannot reach: those of projects with
+   * no containers left, whose compose file is gone too.
+   */
+  removeVolumes(names: string[]): Promise<RunResult> {
+    return this.runDocker(['volume', 'rm', ...names]);
   }
 
   /**

@@ -30,7 +30,7 @@ sees exactly what the README says. In a **linked worktree** it becomes
 
 Docker prefixes named volumes and the default network with the project name, so
 `sail-postgres` becomes `shop-feature-login_sail-postgres`. Each worktree gets
-its own database files, Redis dump and MinIO contents; dropping one worktree's
+its own database files, Redis dump and bucket contents; dropping one worktree's
 data never touches the main checkout's.
 
 <Callout type="info">
@@ -59,6 +59,11 @@ host port the stack publishes is `basePort + offset`:
 | redis | `SAIL_REDIS_PORT` | 6379 | 6782 |
 | mailpit (smtp) | `SAIL_MAILPIT_SMTP_PORT` | 1025 | 1428 |
 | mailpit (ui) | `SAIL_MAILPIT_UI_PORT` | 8025 | 8428 |
+| rustfs (s3) | `SAIL_RUSTFS_PORT` | 9000 | 9403 |
+| rustfs (console) | `SAIL_RUSTFS_CONSOLE_PORT` | 9001 | 9404 |
+| seaweedfs (s3) | `SAIL_SEAWEEDFS_PORT` | 8333 | 8736 |
+| seaweedfs (filer) | `SAIL_SEAWEEDFS_FILER_PORT` | 8888 | 9291 |
+| garage (s3) | `SAIL_GARAGE_PORT` | 3900 | 4303 |
 | minio (s3) | `SAIL_MINIO_PORT` | 9000 | 9403 |
 | minio (console) | `SAIL_MINIO_CONSOLE_PORT` | 8900 | 9303 |
 
@@ -156,9 +161,11 @@ REDIS_PORT=6782
 # sail:end
 ```
 
-Mailpit adds `SMTP_HOST` / `SMTP_PORT`, MinIO adds `AWS_ACCESS_KEY_ID`,
-`AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `S3_BUCKET` and `S3_ENDPOINT`. Everything
-outside the markers is preserved byte for byte.
+Redis also writes an empty `REDIS_PASSWORD` (sail's Redis has no auth),
+Mailpit adds `SMTP_HOST` / `SMTP_PORT`, and object storage adds
+`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `S3_BUCKET` and
+`S3_ENDPOINT` — under whatever names your `config/drive.ts` s3 disk reads
+instead. Everything outside the markers is preserved byte for byte.
 
 The sync is **idempotent**: the block is replaced in place when present,
 appended when absent, and when the result equals what is on disk nothing is
@@ -223,16 +230,18 @@ through to another worktree's database and migrate it. Three details:
 ## `sail:prune`
 
 Deleting a worktree directory does not stop its containers — `git worktree
-remove` knows nothing about docker. `sail:prune` finds the leftovers:
+remove` knows nothing about docker — and even a worktree you `sail:down`-ed
+first leaves its named volumes on disk. `sail:prune` finds the leftovers:
 
 ```bash
-node ace sail:prune --dry-run   # list only
-node ace sail:prune             # stop them
+node ace sail:prune --dry-run   # list stacks and volumes, change nothing
+node ace sail:prune             # stop the stacks
 node ace sail:prune --volumes   # and delete their data
 ```
 
-It lists every compose project on the daemon (`docker compose ls --format json`,
-both the JSON-array and the NDJSON shape) and keeps one only when **both** hold:
+It lists every compose project on the daemon, stopped ones included
+(`docker compose ls --all --format json`, both the JSON-array and the NDJSON
+shape) and keeps one only when **both** hold:
 
 1. **It belongs to this app** — the project name equals the sanitized app name
    or starts with `appName-`. For `shop`, that matches `shop` and
@@ -246,6 +255,21 @@ Matches are stopped with a project-scoped, file-less
 `docker compose --project-name <name> down --remove-orphans` — the compose file
 is gone, so it cannot be passed — plus `--volumes` when asked. Failures are
 reported per project and set a non-zero exit code.
+
+Volumes are found separately, from their `com.docker.compose.project` label,
+because they outlive containers. A volume is an orphan when its project is an
+orphan stack, **or** when no container of that project is left, its project
+matches none of the worktrees `git worktree list` still knows (computed the
+same way `sail:up` names them), and it is one of sail's own volumes
+(`sail-postgres`, `sail-redis`, …) — the project name alone cannot tell a
+`shop` worktree named `api` from another app called `shop-api`. When git
+cannot list the worktrees, only the orphan stacks' volumes count.
+
+Volumes are deleted only with `--volumes`, the same opt-in as
+`sail:down --volumes`: a worktree re-created under the same name picks its old
+data back up otherwise. Without it, prune ends with
+`Kept N volume(s) of deleted worktrees: … — re-run with --volumes to delete them`;
+`--dry-run` lists them either way.
 
 <Callout type="warn">
 `prune` derives the app name from the checkout you run it in, so renaming the

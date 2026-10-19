@@ -28,7 +28,9 @@ required — it only reads and writes files.
 
 | Flag | Effect |
 | --- | --- |
-| `--services=<name>` | Repeatable. Skips detection entirely and uses exactly these services. Valid: `postgres`, `mysql`, `redis`, `mailpit`, `minio`. |
+| `--services=<name>` | Repeatable. Skips detection entirely and uses exactly these services. Valid: `postgres`, `mysql`, `redis`, `mailpit`, `rustfs`, `seaweedfs`, `garage`, `minio`. |
+| `--object-storage=<backend>` | Picks the object storage backend (`rustfs`, `seaweedfs`, `garage`, `minio`) **and** asks for object storage, even when the scan cannot tell whether the app uses it. Saved to `package.json` as `sail.objectStorage`. |
+| `--exclude=<name>` | Repeatable. Services detection must leave out — a service name, or `object-storage` for the whole slot. Saved to `package.json` as `sail.exclude`, so a plain re-run does not bring them back. |
 | `--json` | Machine-readable report on stdout. Defaults to **on** inside an AI coding agent. |
 
 There is no `--force` and no `--dry-run`: every write is append-only and
@@ -44,7 +46,7 @@ Selection is resolved in strict precedence order:
 2. **Otherwise the scan runs** over `package.json`, `start/env.ts` and every
    `config/*.ts` / `config/*.js`. Missing files count as absent, never as
    errors — a fresh checkout scans fine.
-3. **Nothing found** → a multi-select prompt listing the five services with
+3. **Nothing found** → a multi-select prompt listing every service with
    their summaries, or, when sail cannot prompt (AI agent, no TTY), a failure:
    see [below](#when-nothing-is-detected).
 
@@ -59,7 +61,7 @@ table:
 | `mysql2`, `mysql` | mysql |
 | `@adonisjs/redis`, `ioredis`, `bullmq` | redis |
 | `@adonisjs/mail` | mailpit |
-| `@adonisjs/drive`, `flydrive`, `@aws-sdk/client-s3` | minio |
+| `@adonisjs/drive`, `flydrive`, `@aws-sdk/client-s3` | object storage — the backend from `sail.objectStorage`, `rustfs` by default |
 
 A dependency is the **weakest** signal sail has: it says a driver is installed,
 not that the app uses it — which is why a config can veto it (step 6).
@@ -86,7 +88,7 @@ coverage report.
 | --- | --- | --- |
 | `config/redis.ts` | the file exists and is non-empty after comment stripping | redis |
 | `config/mail.ts` | `transports.smtp(` / an `smtp:` mailer key / `SMTP_HOST` / `SMTP_PORT` | mailpit |
-| `config/drive.ts` | `services.s3(` / `disks.s3(` / `disk: 's3'` / `AWS_ACCESS_KEY_ID` / `S3_BUCKET` / `S3_ENDPOINT` | minio |
+| `config/drive.ts` | `services.s3(` / `disks.s3(` / `disk: 's3'` / `AWS_ACCESS_KEY_ID` / `S3_BUCKET` / `S3_ENDPOINT` — unless the default disk comes from the environment, see below | object storage |
 
 `config/queue.ts` is recognised as first-party too, but only contributes env reads.
 
@@ -101,7 +103,7 @@ the selection is the only evidence there is:
 | --- | --- |
 | `store: 'lucid'`, `default: 'lucid'`, `active: 'lucid'` | the configured database (postgres or mysql, per step 2) |
 | `store: 'redis'` / `default: 'redis'` / `transports.redis(` / `admissions.redis(` / `drivers.redis(` / `bullmq` | redis |
-| `disks.s3(` / `services.s3(` / `disk: 's3'` | minio |
+| `disk: 's3'`, or a `disks.s3(` / `services.s3(` in a file that does not pick its disk from the environment | object storage |
 
 Selections that are *defined but not active* become notes, not evidence — sail
 will not provision a container nobody selected. A `stores.lucid(` / `stores.redis(`
@@ -117,6 +119,14 @@ and no amount of reading the file settles it. Sail says so and points at
 `--services=`, rather than telling you to select something you may already
 have selected.
 
+The stock `config/drive.ts` has the same shape — `default: env.get('DRIVE_DISK')`
+— and `DRIVE_DISK` is usually `fs` in development. So an s3 disk in a file that
+picks its disk from the environment provisions nothing; install notes *"config/drive.ts
+picks the disk from the environment (DRIVE_DISK) — sail cannot tell whether s3 is
+the active one; pass --object-storage=rustfs if it is"*. The dependency evidence
+(`@adonisjs/drive`) is dropped with it. `--object-storage` (or `sail.objectStorage`
+in `package.json`) is how you say yes, once, for good.
+
 <Callout type="info">
 **Commented-out code never counts.** Every file is stripped of block and `//`
 comments first, by a quote-aware scanner that spares `//` inside strings and
@@ -127,18 +137,21 @@ one of those would read as an active selection and provision the wrong service.
 
 ### 5. `start/env.ts` and loose env reads
 
-A `DRIVE_DISK` declaration whose enum admits `'s3'` is minio evidence
-(`via: 'env'`). And a bare read of `REDIS_HOST` / `REDIS_PORT` anywhere in the
-scanned configs implies redis, `SMTP_HOST` / `SMTP_PORT` implies mailpit,
-`AWS_ACCESS_KEY_ID` / `S3_BUCKET` / `S3_ENDPOINT` implies minio — which is how
-hand-rolled clients (a raw `ioredis` instance, say) still get a container.
+A `DRIVE_DISK` declaration whose enum admits **only** `'s3'` is object storage
+evidence (`via: 'env'`); one that admits `'s3'` among others (`['fs', 's3']`,
+the stock shape) is the same undecided case as above. A bare read of
+`REDIS_HOST` / `REDIS_PORT` anywhere in the scanned configs implies redis,
+`SMTP_HOST` / `SMTP_PORT` implies mailpit, `AWS_ACCESS_KEY_ID` / `S3_BUCKET` /
+`S3_ENDPOINT` implies object storage (reads inside an env-selected drive config
+excepted) — which is how hand-rolled clients (a raw `ioredis` instance, say)
+still get a container.
 
 ### 6. Vetoes and the pg/mysql tie-break
 
 A **dependency contradicted by its own config** is dropped, with a note, instead
 of provisioning an idle container: `pg` installed while `config/database.ts` is
 on `better-sqlite3` gives *"package.json lists pg but config/database.ts uses
-sqlite — skipping postgres"*; a `config/drive.ts` with no s3 disk skips minio; a
+sqlite — skipping postgres"*; a `config/drive.ts` with no s3 disk skips object storage; a
 `config/mail.ts` with no smtp mailer skips mailpit. The veto only removes
 dependency-only evidence — config and env evidence always survive it — and it
 never applies when the owning config file is absent.
@@ -146,6 +159,45 @@ never applies when the owning config file is absent.
 Postgres and MySQL are then made mutually exclusive: when both survive, the
 client in `config/database.ts` wins, and with no config **postgres wins by
 default**, with a note telling you to pass `--services` to override.
+
+Last, anything listed in `sail.exclude` (below) is taken out, with a note.
+
+## Preferences in `package.json`
+
+Choices that should outlive one run live under a `sail` key in the app's
+`package.json` — committed, so the whole team gets the same stack from a plain
+`node ace sail:install`, and JSON, because install never boots the app to
+evaluate a TypeScript config:
+
+```json
+{
+  "sail": {
+    "objectStorage": "seaweedfs",
+    "exclude": ["mailpit"],
+    "images": { "postgres": "postgres:16" }
+  }
+}
+```
+
+| Key | Effect |
+| --- | --- |
+| `objectStorage` | Backend for the object storage slot (`rustfs`, `seaweedfs`, `garage`, `minio`). Setting it also counts as asking for object storage. `--object-storage` writes it. |
+| `exclude` | Services detection never adds — a service name, or `object-storage` for the whole slot. `--exclude` appends to it. An explicit `--services` still wins. |
+| `images` | Image per service for newly generated blocks, e.g. a Postgres major or a PostGIS build. An existing `compose.yml` block is never rewritten. |
+
+Unknown keys or values are reported as notes and ignored — a typo never stops
+the compose file from being written. Install only writes the key when you pass
+`--object-storage` or `--exclude`, keeping the file's indentation.
+
+### pgvector
+
+When a migration under `database/migrations/` (any depth, `.ts`/`.js`/`.sql`)
+contains `CREATE EXTENSION [IF NOT EXISTS] vector` — any case, quoted or not —
+a new `postgres` block runs `pgvector/pgvector:pg17` instead of `postgres:17`:
+the same Postgres major plus the extension, with the same data layout. A
+`postgres:16` in `sail.images` becomes `pgvector/pgvector:pg16`; a custom image
+is left exactly as configured. For an existing `postgres:17` block, install
+leaves the file alone and notes the one-line image swap instead.
 
 ## What `sail:install` writes
 
@@ -173,8 +225,21 @@ that have a stock first-party shape are appended under the comment
 | `DB_HOST`, `REDIS_HOST`, `SMTP_HOST` | `Env.schema.string({ format: 'host' })` |
 | `DB_PORT`, `REDIS_PORT`, `SMTP_PORT` | `Env.schema.number()` |
 | `DB_PASSWORD`, `REDIS_PASSWORD` | `Env.schema.string.optional()` |
-| `DB_USER`, `DB_DATABASE`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `S3_BUCKET` | `Env.schema.string()` |
-| `S3_ENDPOINT` | `Env.schema.string({ format: 'url', tld: false })` |
+| `DB_USER`, `DB_DATABASE` | `Env.schema.string()` |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `S3_BUCKET` | `Env.schema.string.optional()` |
+| `S3_ENDPOINT` | `Env.schema.string.optional({ format: 'url', tld: false })` |
+
+The object storage keys are **optional** on purpose: production and CI often
+reach S3 through an IAM role or differently named keys, and a required
+validation sail added for local development would stop those boots.
+
+And they follow **the names your s3 disk reads**. Sail parses the `s3` disk in
+`config/drive.ts`: `accessKeyId: env.get('S3_ACCESS_KEY')` makes the key
+`S3_ACCESS_KEY` (with the same optional shape), a literal such as
+`region: 'us-east-1'` makes sail write no region at all, and a
+`forcePathStyle: env.get('S3_PATH_STYLE')` gets `true`. Only properties the
+disk does not mention fall back to the stock names above — so an app whose disk
+reads `S3_*` never gets an `AWS_*` key it does not use.
 
 Keys outside that map — notably **`MAIL_MAILER`** and **`DRIVE_DISK`**, whose
 shape is an app-specific enum — are only *reported* (*"sail has no stock
@@ -185,9 +250,10 @@ coverage line: keys declared, keys the configs use, keys missing.
 
 Main-checkout defaults (base ports, offset 0) are added only for keys
 **missing from both files**: a key you already set is never rewritten, so a
-tuned value survives every re-run. `DB_PASSWORD`,
-`AWS_SECRET_ACCESS_KEY` and `REDIS_PASSWORD` are written to `.env` but omitted
-from the committed `.env.example`.
+tuned value survives every re-run. Secrets — any key with `PASSWORD` or
+`SECRET` in its name — are written to `.env` but left empty in the committed
+`.env.example`. Both files always end with a newline afterwards, so the next
+`echo KEY=value >> .env` lands on a line of its own.
 
 <Callout type="warn">
 Only dotenv files that already exist are written. On a fresh clone — where
@@ -204,13 +270,14 @@ DB_PASSWORD=password
 DB_DATABASE=app
 REDIS_HOST=127.0.0.1                # redis
 REDIS_PORT=6379
+REDIS_PASSWORD=
 SMTP_HOST=127.0.0.1                 # mailpit
 SMTP_PORT=1025
-AWS_ACCESS_KEY_ID=sail              # minio
+AWS_ACCESS_KEY_ID=sail              # rustfs (names follow config/drive.ts)
 AWS_SECRET_ACCESS_KEY=password
 AWS_REGION=us-east-1
 S3_BUCKET=local
-S3_ENDPOINT=http://localhost:9000
+S3_ENDPOINT=http://127.0.0.1:9000
 ```
 
 <Callout type="warn">
@@ -240,9 +307,11 @@ docs always win. Details in [Varlock](/docs/sail/varlock).
 
 ### `AGENTS.md`
 
-A section wrapped in `<!-- sail:start -->` / `<!-- sail:end -->` markers is
-created, appended, or replaced in place — running install twice produces a
-byte-identical file. It stays deliberately generic (no worktree names, no
+A section wrapped in `<!-- sail:start checksum=… -->` / `<!-- sail:end -->`
+markers is created or appended, and refreshed in place on later runs **only
+while it still matches the checksum** — running install twice produces a
+byte-identical file, and a section you translated or reworded is never reset
+(install reports `kept`). It stays deliberately generic (no worktree names, no
 concrete ports), because the file is committed and shared, and points agents at
 `sail:info --json` for live values. See [Agents](/docs/sail/agents).
 
@@ -272,6 +341,7 @@ With `--json` (implicit inside an agent) the whole run is one object:
   "projectName": "myapp-feature-login",
   "portOffset": 317,
   "agentsMd": "created",
+  "config": "unchanged",
   "varlock": "skipped (no varlock detected)",
   "env": { "validations": ["DB_HOST", "DB_PORT"], "variables": ["DB_HOST", "DB_PORT"] },
   "notes": []
@@ -280,11 +350,13 @@ With `--json` (implicit inside an agent) the whole run is one object:
 
 `compose` is one of `created with …`, `updated (added …)` or `already up to
 date`; `agentsMd` and `varlock` report `created` / `updated` / `unchanged`
-(varlock also `skipped (no varlock detected)`). `notes` carries every scan hint
-plus, whenever minio is selected, the one step sail refuses to do for you:
-*"add `endpoint: env.get('S3_ENDPOINT')` to the s3 disk in config/drive.ts and
-create the 'local' bucket in the MinIO console"* — the stock drive stub has no
-endpoint variable.
+(`agentsMd` also `kept (edited by hand — …)`, varlock also `skipped (no varlock
+detected)`); `config` is `updated` when `--object-storage` / `--exclude` changed
+`package.json`. `notes` carries every scan hint plus, when object storage is
+selected and the s3 disk lacks them, the one edit sail refuses to make for you:
+*"add `endpoint: env.get('S3_ENDPOINT')` and `forcePathStyle: true` to the s3
+disk in config/drive.ts"* — the stock drive stub has neither, and every local
+backend needs both. The bucket itself is created by `sail:up`.
 
 ## When nothing is detected
 
@@ -293,7 +365,7 @@ exits `1` with:
 
 ```
 Could not detect any service from package.json or config/*.ts
-Re-run with explicit services, e.g. node ace sail:install --services=postgres --services=redis (valid: postgres, mysql, redis, mailpit, minio)
+Re-run with explicit services, e.g. node ace sail:install --services=postgres --services=redis (valid: postgres, mysql, redis, mailpit, rustfs, seaweedfs, garage, minio)
 ```
 
 In JSON mode the same pair is emitted as `{ "error": …, "hint": … }`.
@@ -306,7 +378,8 @@ Just run it again — there is nothing to undo first:
 
 ```bash
 node ace sail:install                      # re-detect after installing a package
-node ace sail:install --services=minio     # add one explicitly
+node ace sail:install --services=redis     # add one explicitly
+node ace sail:install --object-storage=garage  # add object storage, on Garage
 ```
 
 Re-running merges the new service into `compose.yml`, appends only the still
@@ -317,7 +390,11 @@ touches nothing else; when nothing is missing it prints `already up to date` /
 <Callout type="info">
 `--services` replaces the selection for that run but never subtracts: services
 already in `compose.yml` stay. Remove one by deleting its block from
-`compose.yml` (run `sail:down --volumes` first if you want its data gone).
+`compose.yml` (run `sail:down --volumes` first if you want its data gone), and
+add it to `sail.exclude` (`--exclude=<name>`) so detection does not bring it
+back. The same goes for switching object storage backends: compose.yml keeps
+the one it runs until you delete its block — install tells you so instead of
+running two.
 </Callout>
 
 Next: [Commands](/docs/sail/commands) for the everyday workflow, or

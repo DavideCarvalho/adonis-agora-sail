@@ -3,7 +3,8 @@
 [![npm version](https://img.shields.io/npm/v/@adonis-agora/sail)](https://www.npmjs.com/package/@adonis-agora/sail) [![npm downloads](https://img.shields.io/npm/dm/@adonis-agora/sail)](https://www.npmjs.com/package/@adonis-agora/sail) [![CI](https://github.com/DavideCarvalho/adonis-agora-sail/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/DavideCarvalho/adonis-agora-sail/actions/workflows/ci.yml) [![license](https://img.shields.io/npm/l/@adonis-agora/sail)](https://www.npmjs.com/package/@adonis-agora/sail)
 
 Docker-powered local dev services for AdonisJS. Sail runs Postgres, MySQL,
-Redis, Mailpit and MinIO in Docker while the app itself stays on the host —
+Redis, Mailpit and S3-compatible object storage (RustFS by default; SeaweedFS,
+Garage or MinIO on request) in Docker while the app itself stays on the host —
 and every git worktree gets isolated containers with deterministic,
 shifted host ports, automatically.
 
@@ -21,7 +22,7 @@ node ace sail:logs redis --tail 100
 node ace sail:exec redis -- redis-cli ping
 node ace sail:share             # public tunnel URL for previews and webhooks
 node ace sail:down              # stop this worktree's stack
-node ace sail:prune --dry-run   # stacks left behind by deleted worktrees
+node ace sail:prune --dry-run   # stacks and volumes left behind by deleted worktrees
 ```
 
 ### How it works
@@ -30,7 +31,10 @@ node ace sail:prune --dry-run   # stacks left behind by deleted worktrees
 (`client: 'pg'`, `config/redis.ts`, smtp mailers, s3 disks, active
 `store: 'lucid'` selections in Agora configs — commented-out alternatives
 are ignored, and a dependency contradicted by its config is skipped with a
-note). It writes a worktree-agnostic `compose.yml` (host ports interpolate
+note; an s3 disk picked through `DRIVE_DISK` is left to `--object-storage`).
+Preferences that should stick — the object storage backend, services to
+leave out, image overrides — live under `sail` in `package.json`. It writes
+a worktree-agnostic `compose.yml` (host ports interpolate
 `${SAIL_*_PORT:-base}`), appends the missing `start/env.ts` validations and
 `.env` / `.env.example` defaults through the codemods, declares the keys in
 `.env.schema` for varlock users, and documents the workflow in `AGENTS.md`.

@@ -30,6 +30,15 @@ export function dotenvKeysPresent(content: string): Set<string> {
 }
 
 /**
+ * The content with exactly one guaranteed final newline: a file that ends
+ * mid-line is the one the next `echo KEY=value >> .env` glues onto. Content
+ * that already ends with a newline is returned unchanged (same string).
+ */
+export function ensureTrailingNewline(content: string): string {
+  return content.length === 0 || content.endsWith('\n') ? content : `${content}\n`;
+}
+
+/**
  * Upserts `KEY=value` lines, preserving comments, order and blank lines, and
  * appending keys that are not there yet. Returns the input unchanged (same
  * string) when every key already holds the wanted value — callers use that

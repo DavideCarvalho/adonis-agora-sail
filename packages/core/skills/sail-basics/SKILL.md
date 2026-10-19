@@ -23,7 +23,8 @@ sources:
 
 # Sail basics: services up, ports per worktree
 
-Sail runs backing services (Postgres, Redis, Mailpit, MinIO) in Docker while
+Sail runs backing services (Postgres, Redis, Mailpit, S3-compatible object
+storage) in Docker while
 the app itself runs on the host with `node ace serve --hmr`. Every git
 worktree gets **isolated containers and shifted host ports** automatically —
 never hardcode `5432` outside the main checkout.
@@ -54,7 +55,7 @@ teammates on the same worktree name get the same ports). Query, don't guess:
 ```bash
 node ace sail:info              # human summary: ports, dashboards, app env
 node ace sail:info --json       # full stack object (default inside agents)
-eval $(node ace sail:info --env)  # export DB_/REDIS_/SMTP_/AWS_ vars (fallback)
+eval $(node ace sail:info --env)  # export DB_/REDIS_/SMTP_/S3_/AWS_ vars (fallback)
 ```
 
 No `eval` needed in the normal flow: `sail:up` / `sail:sync-env` write
@@ -76,13 +77,32 @@ over `.env` on its own. Just boot the app.
    (e.g. `@adonisjs/drive` installed but drive uses fs-only) is skipped
    with a note instead of provisioning an idle container.
 
+A store or disk chosen through the environment (`default:
+env.get('DRIVE_DISK')`, the stock drive config) is reported, not
+provisioned. Object storage is one slot with four backends — `rustfs`
+(default), `seaweedfs`, `garage`, `minio`; `--object-storage=<backend>`
+picks one and asks for it. `--exclude=<service>` (or `object-storage`)
+keeps a service out of detection (`--services` still overrides it). Both persist under `sail` in
+`package.json`, next to `images` overrides, so plain re-runs honor them.
+A migration that creates the `vector` extension gets the pgvector build
+of the configured Postgres major (`pgvector/pgvector:pg17` for the default
+`postgres:17`, `sail.images.postgres` overrides it). Existing blocks are
+never rewritten; install notes the image to switch to instead.
+
 Then it wires, all append-only: missing `start/env.ts` validations via
 the codemods (stock first-party shapes; `MAIL_MAILER`/`DRIVE_DISK` are
 reported, never guessed), main-checkout defaults into `.env` /
 `.env.example` for keys missing from both, and the varlock schema when
 detected. Existing declarations and values are never overwritten.
+Object storage keys follow the names the app's s3 disk reads
+(`env.get('S3_ACCESS_KEY')` → `S3_ACCESS_KEY`), and their validations are
+`.optional()` so production boots without them. `sail:up` creates the
+`local` bucket (idempotently) and writes `REDIS_PASSWORD=` (empty) to
+`.env.local`, because sail's Redis has no auth — omitted when
+`start/env.ts` declares it required, where an empty value would fail boot.
+Files install changed in `.env` / `.env.example` end with a newline.
 `node ace sail:info` shows the evidence per service plus any notes
-(sqlite, memory stores, the MinIO `S3_ENDPOINT` passthrough).
+(sqlite, memory stores, the s3 disk's `endpoint` / `forcePathStyle`).
 
 ## Everyday commands
 
@@ -101,7 +121,8 @@ node ace sail:prune --dry-run    # stacks left behind by deleted worktrees
 
 `--follow` streams text and refuses `--json`. `sail:prune` without
 `--dry-run` stops orphans (compose file gone from disk); other apps'
-projects are never touched.
+projects are never touched. Volumes of deleted worktrees are listed by
+`--dry-run` and deleted only with `--volumes`.
 
 ## Service shells and sharing
 
@@ -162,8 +183,9 @@ ports.
 - Inside an AI agent every command defaults to JSON, never prompts, and
   never uses ANSI/spinners. If `sail:install` cannot detect services it
   fails with the exact `--services=` flags to re-run.
-- `sail:install` keeps an `AGENTS.md` section (`<!-- sail:start -->`)
-  describing this workflow — that is how future agents discover it.
+- `sail:install` keeps an `AGENTS.md` section (`<!-- sail:start … -->`)
+  describing this workflow — that is how future agents discover it. A
+  section someone edited (translated, reworded) is never overwritten.
 - `compose.yml` interpolates `${SAIL_*_PORT:-base}`: the committed file is
   identical in every worktree, sail injects offset ports at runtime, and a
   bare `docker compose up` still works with defaults.

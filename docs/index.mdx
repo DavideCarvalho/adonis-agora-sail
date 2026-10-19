@@ -9,7 +9,7 @@ import { Cards, Card } from 'fumadocs-ui/components/card';
 import { Steps, Step } from 'fumadocs-ui/components/steps';
 
 **`@adonis-agora/sail`** runs your backing services — Postgres, MySQL, Redis,
-Mailpit, MinIO — in Docker, while the app itself stays on the host with
+Mailpit, S3-compatible object storage (RustFS, SeaweedFS, Garage or MinIO) — in Docker, while the app itself stays on the host with
 `node ace serve --hmr`. No PHP-style app container: HMR stays fast and the
 debugger keeps working.
 

@@ -120,9 +120,9 @@ The full key set per service:
 | Service | Keys written |
 | --- | --- |
 | postgres / mysql | `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_DATABASE` |
-| redis | `REDIS_HOST`, `REDIS_PORT` |
+| redis | `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD` |
 | mailpit | `SMTP_HOST`, `SMTP_PORT` |
-| minio | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `S3_BUCKET`, `S3_ENDPOINT` |
+| rustfs / seaweedfs / garage / minio | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `S3_BUCKET`, `S3_ENDPOINT` — or the names your `config/drive.ts` s3 disk reads |
 
 ## Append-only, always
 
@@ -313,8 +313,9 @@ stays, and the synced port is validated as a string. Fix the declaration in the 
 **Keys sail reports but never writes.** `sail:install` only owns the connection keys listed above.
 Keys that select a driver rather than address a service — `MAIL_MAILER`, `DRIVE_DISK` — are reported
 as notes (`start/env.ts is missing … — sail has no stock validation for these, add them by hand`)
-and left to you, in `start/env.ts` and in `.env.schema` alike. Same for MinIO's one-time setup:
-adding `endpoint: env.get('S3_ENDPOINT')` to the s3 disk and creating the `local` bucket.
+and left to you, in `start/env.ts` and in `.env.schema` alike. Same for the s3 disk edit object
+storage needs: adding `endpoint: env.get('S3_ENDPOINT')` and `forcePathStyle: true` (the bucket
+itself is created by `sail:up`).
 
 **A key got appended even though it's already declared.** Sail's "already present" check matches
 `KEY=` at column 0, uppercase, digits and underscores only. An indented or lowercase declaration is

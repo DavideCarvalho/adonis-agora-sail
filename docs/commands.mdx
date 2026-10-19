@@ -35,7 +35,7 @@ Every command targets the compose project of the current worktree (`<app>-<workt
 node ace sail:install [--services=postgres --services=redis] [--json]
 ```
 
-Generates or merges `compose.yml`, appends `Env.schema` validations to `start/env.ts`, adds missing `.env` / `.env.example` defaults, upserts the varlock `.env.schema` section and the `AGENTS.md` block. `--services` is an array flag (repeat it, or comma-separate); omitted, sail auto-detects from `package.json` and `config/*.ts`, and prompts with a multi-select only when the scan finds nothing *and* the session is interactive. Unknown names fail with `Unknown service(s): <names>` / `Valid services: postgres, mysql, redis, mailpit, minio`; an empty scan under an agent fails with `Could not detect any service from package.json or config/*.ts` plus the exact `--services=` re-run. Docker is not required. Full walkthrough and JSON payload: [Install](/docs/sail/install).
+Generates or merges `compose.yml`, appends `Env.schema` validations to `start/env.ts`, adds missing `.env` / `.env.example` defaults, upserts the varlock `.env.schema` section and the `AGENTS.md` block. `--services` is an array flag (repeat it, or comma-separate); omitted, sail auto-detects from `package.json` and `config/*.ts`, and prompts with a multi-select only when the scan finds nothing *and* the session is interactive. `--object-storage=<backend>` picks the object storage backend and asks for it, `--exclude=<name>` keeps a service out of detection; both are saved under `sail` in `package.json`. Unknown names fail with `Unknown service(s): <names>` / `Valid services: postgres, mysql, redis, mailpit, rustfs, seaweedfs, garage, minio`; an empty scan under an agent fails with `Could not detect any service from package.json or config/*.ts` plus the exact `--services=` re-run. Docker is not required. Full walkthrough and JSON payload: [Install](/docs/sail/install).
 
 ## `sail:up`
 
@@ -59,6 +59,8 @@ Cannot start: host port(s) already in use: :5621 (held by shop-main-postgres-1),
 Hint: ``Stop the other stack (`node ace sail:down` in that worktree), pick a worktree with free ports, or run `node ace sail:prune` for orphans``. Holder names come from `docker ps --format json` and are best-effort — a port held by a non-docker process is reported without a name.
 
 The probe is scoped to the services your `compose.yml` declares, so a system MySQL on `3306` never blocks a postgres-only stack. When the compose file cannot be read there is nothing to probe and the preflight is skipped — `docker compose` then reports the real problem.
+
+Once the healthchecks pass it runs the services' one-off setup inside their containers — today, creating the `local` bucket on RustFS and MinIO (SeaweedFS and Garage do it themselves at boot). Each step is idempotent and runs on every `up`; a failing one exits with the step's own code, prints `sail:up started the stack but could not create the 'local' bucket in <service>:` plus its output, and skips the env sync. The JSON payload lists what ran under `bootstrap`.
 
 On success it syncs `.env.local` and `.env.test.local` — the same sync as [`sail:sync-env`](#sailsync-env) — and prints the `sail:info` summary:
 
@@ -284,25 +286,25 @@ Files that look like varlock ciphertext are skipped, not corrupted — and that 
 node ace sail:prune [--dry-run] [--volumes] [--json]
 ```
 
-Deleting a worktree without running `sail:down` leaves its containers behind. `sail:prune` lists every compose project on the daemon (`docker compose ls --format json`, both the array and the NDJSON shape) and stops the ones that belong to this app and whose compose file is gone.
+Deleting a worktree without running `sail:down` leaves its containers behind, and every deleted worktree leaves its volumes. `sail:prune` lists every compose project on the daemon, stopped ones included (`docker compose ls --all --format json`, both the array and the NDJSON shape), stops the ones that belong to this app and whose compose file is gone, and with `--volumes` deletes the orphan volumes — see [Worktrees](/docs/sail/worktrees#sailprune) for how a volume counts as orphan.
 
 | Flag | Alias | Type | Default | Effect |
 | --- | --- | --- | --- | --- |
-| `--dry-run` | — | boolean | `false` | Only lists the orphans |
-| `--volumes` | — | boolean | `false` | Also deletes the orphan stacks' volumes (their data) |
+| `--dry-run` | — | boolean | `false` | Only lists the orphan stacks and volumes |
+| `--volumes` | — | boolean | `false` | Also deletes the orphan volumes (their data) — the same opt-in as `sail:down --volumes` |
 | `--json` | — | boolean | agent-detected | Machine-readable output |
 
 A project counts as an orphan only when its name is `<app>` or starts with `<app>-`, *and* it reports at least one config file, *and* none of those files exist on disk. Projects with no reported config files, and other apps' projects, are never touched. There is no confirmation prompt — `--dry-run` is the safe look. Each orphan is stopped with a global (file-less) `docker compose --project-name <name> down --remove-orphans`.
 
-The payload varies with the outcome; `failed` appears only on the real run:
+The payload varies with the outcome; `failed` appears only on the real run, and `volumes` lists the orphan volumes whether or not `--volumes` deletes them:
 
 ```json
-{ "orphans": [], "removed": [] }
-{ "orphans": ["shop-old-branch"], "removed": [] }
-{ "orphans": ["shop-old-branch"], "removed": ["shop-old-branch"], "failed": [] }
+{ "orphans": [], "volumes": [], "removed": [], "removedVolumes": [] }
+{ "orphans": ["shop-old-branch"], "volumes": ["shop-old-branch_sail-postgres"], "removed": [], "removedVolumes": [] }
+{ "orphans": ["shop-old-branch"], "volumes": ["shop-old-branch_sail-postgres"], "removed": ["shop-old-branch"], "removedVolumes": ["shop-old-branch_sail-postgres"], "failed": [] }
 ```
 
-Human output is `No orphan sail stacks — everything running belongs to a live worktree.`, or the indented list under `Orphan sail stacks (re-run without --dry-run to stop them):`, or `Stopped orphan stack(s): <names>`. Any stack that fails to stop is reported as `Could not stop "<name>":\n<tail>` and sets the exit code to `1`. A listing failure exits `1` with `Could not list compose projects: docker compose ls failed: <stderr>` / `Is the Docker daemon running?`.
+Human output is `No orphan sail stacks — everything running belongs to a live worktree.`, or the indented lists under `Orphan sail stacks (re-run without --dry-run to stop them):` and `Orphan volumes (re-run with --volumes and without --dry-run to delete them):`, or `Stopped orphan stack(s): <names>` / `Deleted orphan volume(s): <names>` / `Kept N volume(s) of deleted worktrees: … — re-run with --volumes to delete them`. Any stack that fails to stop is reported as `Could not stop "<name>":\n<tail>` and sets the exit code to `1`. A listing failure exits `1` with `Could not list compose projects: docker compose ls failed: <stderr>` / `Is the Docker daemon running?`.
 
 ## `sail:domain`
 

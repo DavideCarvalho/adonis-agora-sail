@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 
+import { type AppEnvOptions, serviceAppEnv } from './app_env.js';
 import { type AppScan, scanAppConfig } from './app_scan.js';
 import { servicesInComposeFile } from './compose_file.js';
 import { resolveSailContext } from './context.js';
@@ -29,9 +30,15 @@ export interface SailStackInfo {
 /**
  * Computes everything `sail:info` (and the post-`sail:up` summary) shows for
  * a stack: per-service host ports with the worktree offset applied, dashboard
- * URLs and the env vars the app should use to reach each service.
+ * URLs and the env vars the app should use to reach each service — under
+ * the key names the app reads, when `options` says which (see
+ * {@link appEnvOptionsFromScan}).
  */
-export function buildStackInfo(context: SailContext, services: SailServiceName[]): SailStackInfo {
+export function buildStackInfo(
+  context: SailContext,
+  services: SailServiceName[],
+  options: AppEnvOptions = {},
+): SailStackInfo {
   const serviceInfos: SailServiceInfo[] = services.map((name) => {
     const service = SERVICES[name];
     const hostPorts = resolveHostPorts(service.ports, context.portOffset);
@@ -45,7 +52,7 @@ export function buildStackInfo(context: SailContext, services: SailServiceName[]
         containerPort: port.containerPort,
       })),
       dashboards: service.dashboards(hostPorts),
-      appEnv: service.appEnv(hostPorts),
+      appEnv: serviceAppEnv(name, hostPorts, options),
     };
   });
 
@@ -65,6 +72,14 @@ export function buildStackInfo(context: SailContext, services: SailServiceName[]
     services: serviceInfos,
     appEnv,
   };
+}
+
+/**
+ * The {@link AppEnvOptions} an app scan implies: the env keys its s3 disk
+ * reads and the keys its `start/env.ts` requires.
+ */
+export function appEnvOptionsFromScan(scan: AppScan): AppEnvOptions {
+  return { s3EnvNames: scan.s3EnvNames, requiredEnvKeys: scan.requiredEnvKeys };
 }
 
 /**
@@ -89,7 +104,12 @@ export async function resolveStackInfo(appRoot: URL): Promise<{
     services = scan.services;
   }
 
-  return { context, services, scan, info: buildStackInfo(context, services) };
+  return {
+    context,
+    services,
+    scan,
+    info: buildStackInfo(context, services, appEnvOptionsFromScan(scan)),
+  };
 }
 
 /**

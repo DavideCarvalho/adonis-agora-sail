@@ -241,7 +241,7 @@ Could not detect any service from package.json or config/*.ts
 
 Hint: `Re-run with explicit services, e.g. node ace sail:install
 --services=postgres --services=redis (valid: postgres, mysql, redis, mailpit,
-minio)`. The scan found no evidence **and** the session cannot prompt (no TTY,
+rustfs, seaweedfs, garage, minio)`. The scan found no evidence **and** the session cannot prompt (no TTY,
 or an AI agent). On an interactive terminal you get a multi-select instead:
 picking nothing prints `No services selected — nothing to do.` and exits
 cleanly, while an aborted prompt fails with `Service selection was aborted`
@@ -253,7 +253,7 @@ plus the same re-run hint.
 Unknown service(s): postgresql
 ```
 
-Hint: `Valid services: postgres, mysql, redis, mailpit, minio`. `--services` is
+Hint: `Valid services: postgres, mysql, redis, mailpit, rustfs, seaweedfs, garage, minio`. `--services` is
 validated before anything is written.
 
 ### Codemods could not edit the app
@@ -272,14 +272,53 @@ common causes all surface here rather than being reported as success — no
 `start/env.ts` without `Env.create`, an unparseable or read-only file, or a
 `.env` that does not exist yet.
 
-### MinIO needs one manual step
+### Object storage needs one edit to config/drive.ts
 
 ```text
-MinIO: add `endpoint: env.get('S3_ENDPOINT')` to the s3 disk in config/drive.ts and create the 'local' bucket in the MinIO console
+Object storage: add `endpoint: env.get('S3_ENDPOINT')` and `forcePathStyle: true` to the s3 disk in config/drive.ts — the local backend needs both
 ```
 
-A note, not a failure, printed whenever minio is selected: stock `drive.stub`
-has no endpoint variable, so the passthrough cannot be generated safely.
+A note, not a failure, printed when object storage is selected and the s3 disk
+lacks either setting: the stock `drive.stub` has neither, so the SDK would talk
+to AWS with virtual-host URLs. Sail does not rewrite third-party config bodies.
+The bucket needs nothing from you — `sail:up` creates it.
+
+### Object storage was not provisioned
+
+```text
+config/drive.ts picks the disk from the environment (DRIVE_DISK) — sail cannot tell whether s3 is the active one; pass --object-storage=rustfs if it is
+```
+
+The stock drive config reads `default: env.get('DRIVE_DISK')`, usually `fs` in
+development, so sail does not guess. Run
+`node ace sail:install --object-storage=<backend>` once; it records the choice
+in `package.json` (`sail.objectStorage`), and later plain installs keep it.
+
+### A removed service keeps coming back
+
+Detection re-adds what the app evidently uses. Record the exclusion:
+`node ace sail:install --exclude=mailpit` (or `--exclude=object-storage`)
+writes `sail.exclude` to `package.json`, and plain installs leave it out from
+then on.
+
+### sail:up could not create the bucket
+
+```text
+sail:up started the stack but could not create the 'local' bucket in rustfs:
+```
+
+The stack is up, but the one-off bucket step inside the container failed —
+usually because the backend was not ready yet or its credentials were edited
+in `compose.yml` while the volume kept the old ones. `node ace sail:logs
+rustfs` shows why; `sail:up` again retries it (it is idempotent). The `.env`
+files are not synced on this failure.
+
+### minio/minio cannot be pulled
+
+MinIO no longer publishes `minio/minio`. Point the `minio` block's image at
+`cgr.dev/chainguard/minio:latest` (same entrypoint, `mc` included), or move to
+another backend: delete the `minio` block and its volume from `compose.yml`
+and run `node ace sail:install --object-storage=rustfs`.
 
 ## Tunnels
 
