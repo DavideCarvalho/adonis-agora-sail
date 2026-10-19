@@ -110,7 +110,7 @@ describe('scanAppFiles', () => {
     expect(scan.missingEnvKeys).toEqual([]);
   });
 
-  it('detects redis/mail/minio from their config files alone', () => {
+  it('detects redis/mail/object storage from their config files alone', () => {
     const scan = scanAppFiles({
       dependencies: {},
       configs: {
@@ -119,7 +119,7 @@ describe('scanAppFiles', () => {
         'drive.ts': `s3: services.s3({ bucket: env.get('S3_BUCKET') })`,
       },
     });
-    expect(scan.services).toEqual(['redis', 'mailpit', 'minio']);
+    expect(scan.services).toEqual(['redis', 'mailpit', 'rustfs']);
     expect(scan.missingEnvKeys).toEqual(['S3_BUCKET', 'SMTP_HOST']);
   });
 
@@ -191,7 +191,9 @@ describe('scanAppFiles', () => {
       configs: { 'drive.ts': `default: env.get('DRIVE_DISK'), services: { fs: services.fs() }` },
     });
     expect(driveFs.services).toEqual([]);
-    expect(driveFs.notes.join('\n')).toContain('skipping minio');
+    expect(driveFs.notes.join('\n')).toContain(
+      'package.json lists @adonisjs/drive but config/drive.ts has no s3 disk — skipping rustfs',
+    );
 
     const mailResend = scanAppFiles({
       dependencies: { '@adonisjs/mail': '^10.0.0' },
@@ -206,21 +208,33 @@ describe('scanAppFiles', () => {
       dependencies: { '@adonisjs/drive': '^4.0.0' },
       configs: {},
     });
-    expect(scan.services).toEqual(['minio']);
+    expect(scan.services).toEqual(['rustfs']);
   });
 
-  it('reads DRIVE_DISK s3 enums as minio evidence', () => {
+  it('reads a DRIVE_DISK enum that only admits s3 as object storage evidence', () => {
+    const scan = scanAppFiles({
+      dependencies: {},
+      envTs: `export default await Env.create(url, { DRIVE_DISK: Env.schema.enum(['s3'] as const) })`,
+      configs: {},
+    });
+    expect(scan.services).toEqual(['rustfs']);
+    expect(scan.evidence).toContainEqual({
+      service: 'rustfs',
+      via: 'env',
+      detail: 'start/env.ts:DRIVE_DISK is s3',
+    });
+  });
+
+  it('reads a DRIVE_DISK enum that admits s3 among others as undecided', () => {
     const scan = scanAppFiles({
       dependencies: {},
       envTs: `export default await Env.create(url, { DRIVE_DISK: Env.schema.enum(['fs', 's3'] as const) })`,
       configs: {},
     });
-    expect(scan.services).toEqual(['minio']);
-    expect(scan.evidence).toContainEqual({
-      service: 'minio',
-      via: 'env',
-      detail: 'start/env.ts:DRIVE_DISK allows s3',
-    });
+    expect(scan.services).toEqual([]);
+    expect(scan.notes.join('\n')).toContain(
+      'start/env.ts picks the disk from the environment (DRIVE_DISK) — sail cannot tell whether s3 is the active one; pass --object-storage=rustfs if it is',
+    );
   });
 
   it('flags unmapped missing keys as hand-written notes', () => {

@@ -2,9 +2,28 @@ import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import {
+  parseRequiredEnvKeys,
+  parseS3DiskConfig,
+  type S3DiskConfig,
+  type S3EnvNames,
+  stockKeyFor,
+} from './app_env.js';
 import { detectServicesFromDependencies } from './detect.js';
-import { SERVICE_NAMES, SERVICES } from './services.js';
-import type { SailServiceName } from './types.js';
+import {
+  OBJECT_STORAGE_EXCLUDE,
+  readSailConfig,
+  type SailConfig,
+  type SailExclude,
+} from './sail_config.js';
+import {
+  DEFAULT_OBJECT_STORAGE,
+  isObjectStorageBackend,
+  OBJECT_STORAGE_DEPENDENCIES,
+  SERVICE_NAMES,
+  SERVICES,
+} from './services.js';
+import type { ObjectStorageBackend, SailServiceName } from './types.js';
 
 export type ServiceEvidenceVia = 'dependency' | 'config' | 'env';
 
@@ -23,11 +42,57 @@ export interface AgoraSignal {
 }
 
 /**
- * Setup hint shown whenever minio is selected: stock `drive.stub` has no
- * endpoint var, so MinIO needs a one-line passthrough plus a bucket.
+ * Setup hint shown when object storage is selected and the app's s3 disk
+ * lacks what a local backend needs: the stock `drive.stub` sets neither an
+ * endpoint (so the SDK would talk to AWS) nor path-style addressing (which
+ * every local backend needs — `<bucket>.localhost` resolves nowhere useful).
+ * The bucket itself is created by `sail:up`.
  */
-export const MINIO_SETUP_NOTE =
-  "MinIO: add `endpoint: env.get('S3_ENDPOINT')` to the s3 disk in config/drive.ts and create the 'local' bucket in the MinIO console";
+export const OBJECT_STORAGE_SETUP_NOTE =
+  "Object storage: add `endpoint: env.get('S3_ENDPOINT')` and `forcePathStyle: true` to the s3 disk in config/drive.ts — the local backend needs both";
+
+/** @deprecated Kept for imports from 0.4; use {@link OBJECT_STORAGE_SETUP_NOTE}. */
+export const MINIO_SETUP_NOTE = OBJECT_STORAGE_SETUP_NOTE;
+
+/**
+ * The setup note for an app's s3 disk, or null when it already sets both an
+ * endpoint and `forcePathStyle`. Without a parsed disk (object storage chosen
+ * from a dependency or a flag alone) the full note applies.
+ */
+export function objectStorageSetupNote(disk: S3DiskConfig | null): string | null {
+  if (!disk) {
+    return OBJECT_STORAGE_SETUP_NOTE;
+  }
+  const missing: string[] = [];
+  if (!disk.endpointConfigured) {
+    missing.push(`\`endpoint: env.get('${disk.names.endpoint ?? 'S3_ENDPOINT'}')\``);
+  }
+  if (!disk.forcePathStyleConfigured) {
+    missing.push('`forcePathStyle: true`');
+  }
+  if (missing.length === 0) {
+    return null;
+  }
+  return `Object storage: add ${missing.join(' and ')} to the s3 disk in config/drive.ts — the local backend needs ${missing.length > 1 ? 'both' : 'it'}`;
+}
+
+/**
+ * `CREATE EXTENSION [IF NOT EXISTS] vector` in any quoting, any case.
+ */
+const PGVECTOR_PATTERN =
+  /create\s+extension\s+(?:if\s+not\s+exists\s+)?(?:["'`]|\\["'])?vector(?:["'`]|\\["'])?(?![A-Za-z0-9_])/i;
+
+/**
+ * The first migration (by path) that creates the pgvector extension, or null.
+ */
+export function findPgvectorMigration(migrations: Record<string, string>): string | null {
+  for (const file of Object.keys(migrations).sort()) {
+    if (PGVECTOR_PATTERN.test(migrations[file] ?? '')) {
+      return file;
+    }
+  }
+  return null;
+}
 
 export interface AppScan {
   /** Merged service list (postgres wins over mysql unless the config says mysql). */
@@ -42,8 +107,20 @@ export interface AppScan {
   dbClient: DbClient;
   /** Active (uncommented) store/disk selections in non-first-party configs. */
   agora: AgoraSignal[];
-  /** Human hints: sqlite, memory stores, MinIO endpoint, unmapped missing keys… */
+  /** Human hints: sqlite, memory stores, the s3 endpoint, unmapped missing keys… */
   notes: string[];
+  /** The backend that fills the object storage slot when object storage is selected. */
+  objectStorage: ObjectStorageBackend;
+  /** The app's s3 disk (`config/drive.ts`), when it defines one. */
+  s3Disk: S3DiskConfig | null;
+  /** Env keys the s3 disk reads — what the object storage env is written under. */
+  s3EnvNames: S3EnvNames | undefined;
+  /** Keys `start/env.ts` declares as required (no `.optional`). */
+  requiredEnvKeys: string[];
+  /** A migration under `database/migrations` that creates the pgvector extension. */
+  pgvectorMigration: string | null;
+  /** Validated `package.json#sail` preferences. */
+  config: SailConfig;
 }
 
 /**
@@ -85,12 +162,27 @@ export const ENV_VALIDATIONS: Record<string, string> = {
   REDIS_PASSWORD: 'Env.schema.string.optional()',
   SMTP_HOST: "Env.schema.string({ format: 'host' })",
   SMTP_PORT: 'Env.schema.number()',
-  AWS_ACCESS_KEY_ID: 'Env.schema.string()',
-  AWS_SECRET_ACCESS_KEY: 'Env.schema.string()',
-  AWS_REGION: 'Env.schema.string()',
-  S3_BUCKET: 'Env.schema.string()',
-  S3_ENDPOINT: "Env.schema.string({ format: 'url', tld: false })",
+  // Object storage keys are optional on purpose. Sail adds them for the local
+  // backend, but production and CI often reach S3 through an IAM role or a
+  // differently-named set of keys, and a required validation sail added would
+  // stop those boots on a key nobody there sets.
+  AWS_ACCESS_KEY_ID: 'Env.schema.string.optional()',
+  AWS_SECRET_ACCESS_KEY: 'Env.schema.string.optional()',
+  AWS_REGION: 'Env.schema.string.optional()',
+  S3_BUCKET: 'Env.schema.string.optional()',
+  S3_ENDPOINT: "Env.schema.string.optional({ format: 'url', tld: false })",
+  S3_FORCE_PATH_STYLE: 'Env.schema.boolean.optional()',
 };
+
+/**
+ * The validation sail adds for a key it writes: the stock shape, or — for an
+ * object storage key the app's s3 disk names differently (`S3_ACCESS_KEY`) —
+ * the stock key's shape. Undefined when sail has no shape for it.
+ */
+export function envValidationFor(key: string, s3EnvNames?: S3EnvNames): string | undefined {
+  const stock = stockKeyFor(key, s3EnvNames);
+  return stock ? ENV_VALIDATIONS[stock] : ENV_VALIDATIONS[key];
+}
 
 /**
  * Cuts a `//` comment off a line, ignoring `//` inside single, double or
@@ -216,6 +308,15 @@ export interface AppScanInput {
   envTs?: string | null;
   /** Filename (e.g. `telescope.ts`) → file content. */
   configs?: Record<string, string>;
+  /** Path below `database/migrations` → file content. */
+  migrations?: Record<string, string>;
+  /** `package.json#sail`, already validated. */
+  config?: SailConfig;
+  /**
+   * Backend chosen for this run (`--object-storage`). Like
+   * `config.objectStorage`, choosing one counts as asking for object storage.
+   */
+  objectStorage?: ObjectStorageBackend | undefined;
 }
 
 function pushEvidence(evidence: ServiceEvidence[], entry: ServiceEvidence) {
@@ -247,14 +348,36 @@ export function scanAppFiles(input: AppScanInput): AppScan {
   const evidence: ServiceEvidence[] = [];
   const agora: AgoraSignal[] = [];
   const notes: string[] = [];
+  const config: SailConfig = input.config ?? { exclude: [], images: {} };
+  const chosenStorage = input.objectStorage ?? config.objectStorage;
+  const objectStorage: ObjectStorageBackend = chosenStorage ?? DEFAULT_OBJECT_STORAGE;
 
-  for (const name of detectServicesFromDependencies(input.dependencies)) {
-    const hit = SERVICES[name].detectedBy.find((dep) => dep in input.dependencies) ?? 'dependency';
+  for (const name of detectServicesFromDependencies(input.dependencies, objectStorage)) {
+    const hit =
+      [
+        ...SERVICES[name].detectedBy,
+        ...(name === objectStorage ? OBJECT_STORAGE_DEPENDENCIES : []),
+      ].find((dep) => dep in input.dependencies) ?? 'dependency';
     pushEvidence(evidence, { service: name, via: 'dependency', detail: `package.json:${hit}` });
   }
 
+  if (chosenStorage) {
+    pushEvidence(evidence, {
+      service: objectStorage,
+      via: 'config',
+      detail: input.objectStorage ? '--object-storage' : 'package.json:sail.objectStorage',
+    });
+  }
+
   const declaredEnvKeys = input.envTs ? parseEnvTsKeys(input.envTs) : [];
+  const requiredEnvKeys = input.envTs ? parseRequiredEnvKeys(stripComments(input.envTs)) : [];
   const usedKeys = new Set<string>();
+  // S3 env reads count as object storage evidence only from files that use
+  // their s3 disk unconditionally — a disk picked from the environment is the
+  // ambiguity below, and its reads say nothing more than the disk does.
+  const s3ReadsFrom = new Map<string, string[]>();
+  const s3Ambiguous: string[] = [];
+  let s3Disk: S3DiskConfig | null = null;
 
   const configs = input.configs ?? {};
 
@@ -283,9 +406,11 @@ export function scanAppFiles(input: AppScanInput): AppScan {
       continue;
     }
     const stripped = stripComments(raw);
-    for (const key of parseEnvGets(stripped)) {
+    const reads = parseEnvGets(stripped);
+    for (const key of reads) {
       usedKeys.add(key);
     }
+    s3ReadsFrom.set(file, reads);
 
     if (file === 'redis.ts' || file === 'redis.js') {
       if (stripped.trim().length > 0) {
@@ -309,11 +434,23 @@ export function scanAppFiles(input: AppScanInput): AppScan {
     }
 
     if (file === 'drive.ts' || file === 'drive.js') {
+      s3Disk = parseS3DiskConfig(stripped);
       if (
         /services\.s3\(|disks\.s3\(|disk\s*:\s*['"]s3['"]/.test(stripped) ||
         /AWS_ACCESS_KEY_ID|S3_BUCKET|S3_ENDPOINT/.test(stripped)
       ) {
-        pushEvidence(evidence, { service: 'minio', via: 'config', detail: `${file}:s3 disk` });
+        // `default: env.get('DRIVE_DISK')` — the stock shape — leaves the
+        // active disk to `.env`, where it is often `fs` in development. Same
+        // call as for session/lock stores: say so, do not provision.
+        if (selectedFromEnv(stripped) && !/default\s*:\s*['"]s3['"]/.test(stripped)) {
+          s3Ambiguous.push(file);
+        } else {
+          pushEvidence(evidence, {
+            service: objectStorage,
+            via: 'config',
+            detail: `${file}:s3 disk`,
+          });
+        }
       }
       continue;
     }
@@ -359,8 +496,14 @@ export function scanAppFiles(input: AppScanInput): AppScan {
           : `${file} defines a redis store but the active store is not redis — select it and re-run install to use it`,
       );
     }
-    if (/disks\.s3\(|services\.s3\(|disk\s*:\s*['"]s3['"]/.test(stripped)) {
-      agora.push({ file, service: 'minio', detail: 's3 disk' });
+    if (/(^|[^a-zA-Z])disk\s*:\s*['"]s3['"]/.test(stripped)) {
+      agora.push({ file, service: objectStorage, detail: 's3 disk' });
+    } else if (/disks\.s3\(|services\.s3\(/.test(stripped)) {
+      if (selectedFromEnv(stripped) || /(^|[^a-zA-Z])disk\s*:\s*env\.get\(/.test(stripped)) {
+        s3Ambiguous.push(file);
+      } else {
+        agora.push({ file, service: objectStorage, detail: 's3 disk' });
+      }
     }
     if (
       /store\s*:\s*['"]memory['"]/.test(stripped) &&
@@ -373,17 +516,26 @@ export function scanAppFiles(input: AppScanInput): AppScan {
     }
   }
 
-  // `DRIVE_DISK` enums that admit `s3` mean the app can point at MinIO.
+  // A `DRIVE_DISK` enum that only admits `s3` settles it; one that admits
+  // `s3` among others (`['fs', 's3']`, the stock shape) is the same
+  // ambiguity as the env-selected default it feeds.
   if (input.envTs) {
     const driveDiskLine = stripComments(input.envTs)
       .split('\n')
       .find((line) => line.includes('DRIVE_DISK'));
-    if (driveDiskLine?.includes("'s3'") || driveDiskLine?.includes('"s3"')) {
-      pushEvidence(evidence, {
-        service: 'minio',
-        via: 'env',
-        detail: 'start/env.ts:DRIVE_DISK allows s3',
-      });
+    const allowed = [...(driveDiskLine?.matchAll(/['"]([a-z0-9_-]+)['"]/gi) ?? [])].map(
+      (match) => match[1],
+    );
+    if (allowed.includes('s3')) {
+      if (allowed.every((disk) => disk === 's3')) {
+        pushEvidence(evidence, {
+          service: objectStorage,
+          via: 'env',
+          detail: 'start/env.ts:DRIVE_DISK is s3',
+        });
+      } else if (s3Ambiguous.length === 0) {
+        s3Ambiguous.push('start/env.ts');
+      }
     }
   }
 
@@ -395,12 +547,15 @@ export function scanAppFiles(input: AppScanInput): AppScan {
   if (usedKeys.has('SMTP_HOST') || usedKeys.has('SMTP_PORT')) {
     pushEvidence(evidence, { service: 'mailpit', via: 'config', detail: 'SMTP_* env reads' });
   }
+  const s3Reads = [...s3ReadsFrom]
+    .filter(([file]) => !s3Ambiguous.includes(file))
+    .flatMap(([, reads]) => reads);
   if (
-    usedKeys.has('AWS_ACCESS_KEY_ID') ||
-    usedKeys.has('S3_BUCKET') ||
-    usedKeys.has('S3_ENDPOINT')
+    s3Reads.includes('AWS_ACCESS_KEY_ID') ||
+    s3Reads.includes('S3_BUCKET') ||
+    s3Reads.includes('S3_ENDPOINT')
   ) {
-    pushEvidence(evidence, { service: 'minio', via: 'config', detail: 'S3 env reads' });
+    pushEvidence(evidence, { service: objectStorage, via: 'config', detail: 'S3 env reads' });
   }
 
   for (const signal of agora) {
@@ -415,7 +570,7 @@ export function scanAppFiles(input: AppScanInput): AppScan {
   // file exists and shows the service is not used, the dep evidence is
   // dropped (with a note) instead of provisioning an idle container. Config
   // and env evidence always survive the veto.
-  const vetoDepOnly = (service: SailServiceName, reason: string) => {
+  const vetoDepOnly = (service: SailServiceName, reason: string | null) => {
     const depDetails = evidence
       .filter((entry) => entry.service === service && entry.via === 'dependency')
       .map((entry) => entry.detail.replace('package.json:', ''));
@@ -430,7 +585,10 @@ export function scanAppFiles(input: AppScanInput): AppScan {
         evidence.splice(index, 1);
       }
     }
-    notes.push(`package.json lists ${depDetails.join(', ')} but ${reason} — skipping ${service}`);
+    // No reason: the caller reports the situation in a note of its own.
+    if (reason) {
+      notes.push(`package.json lists ${depDetails.join(', ')} but ${reason} — skipping ${service}`);
+    }
   };
 
   if (dbRaw && dbClient && dbClient !== 'pg') {
@@ -439,23 +597,47 @@ export function scanAppFiles(input: AppScanInput): AppScan {
   if (dbRaw && dbClient && dbClient !== 'mysql') {
     vetoDepOnly('mysql', `config/database.ts uses ${dbClient}`);
   }
-  if ('drive.ts' in configs || 'drive.js' in configs) {
-    vetoDepOnly('minio', 'config/drive.ts has no s3 disk');
+  const driveFile = 'drive.ts' in configs ? 'drive.ts' : 'drive.js' in configs ? 'drive.js' : null;
+  if (driveFile) {
+    vetoDepOnly(
+      objectStorage,
+      s3Ambiguous.includes(driveFile) ? null : 'config/drive.ts has no s3 disk',
+    );
+  }
+  const objectStorageEvidenced = evidence.some((entry) => entry.service === objectStorage);
+  if (s3Ambiguous.length > 0 && !objectStorageEvidenced) {
+    const where = s3Ambiguous.map((file) => (file.includes('/') ? file : `config/${file}`));
+    notes.push(
+      `${where.join(', ')} pick${where.length === 1 ? 's' : ''} the disk from the environment (DRIVE_DISK) — sail cannot tell whether s3 is the active one; pass --object-storage=${objectStorage} if it is`,
+    );
   }
   if ('mail.ts' in configs || 'mail.js' in configs) {
     vetoDepOnly('mailpit', 'config/mail.ts has no smtp mailer');
   }
 
-  const { services, dropped } = mergeServices(
+  const merged = mergeServices(
     evidence.map((entry) => entry.service),
     dbClient,
   );
+  const { dropped } = merged;
+  const excluded = merged.services.filter(
+    (name) =>
+      config.exclude.includes(name) ||
+      (isObjectStorageBackend(name) && config.exclude.includes(OBJECT_STORAGE_EXCLUDE)),
+  );
+  const services = merged.services.filter((name) => !excluded.includes(name));
+  if (excluded.length > 0) {
+    notes.push(
+      `package.json "sail.exclude" leaves out ${excluded.join(', ')} — pass --services to add it anyway`,
+    );
+  }
 
+  const s3EnvNames = (s3Disk as S3DiskConfig | null)?.names;
   const usedEnvKeys = [...usedKeys].sort();
   const missingEnvKeys = usedEnvKeys.filter((key) => !declaredEnvKeys.includes(key));
 
   const unmappedMissing = missingEnvKeys.filter(
-    (key) => !(key in ENV_VALIDATIONS) && !FRAMEWORK_ENV_KEYS.includes(key),
+    (key) => envValidationFor(key, s3EnvNames) === undefined && !FRAMEWORK_ENV_KEYS.includes(key),
   );
   if (unmappedMissing.length > 0) {
     notes.push(
@@ -469,8 +651,18 @@ export function scanAppFiles(input: AppScanInput): AppScan {
     );
   }
 
-  if (services.includes('minio')) {
-    notes.push(MINIO_SETUP_NOTE);
+  if (services.some(isObjectStorageBackend)) {
+    const setup = objectStorageSetupNote(s3Disk);
+    if (setup) {
+      notes.push(setup);
+    }
+  }
+
+  const pgvectorMigration = findPgvectorMigration(input.migrations ?? {});
+  if (pgvectorMigration && services.includes('postgres')) {
+    notes.push(
+      `database/migrations/${pgvectorMigration} creates the pgvector extension — postgres runs the pgvector image`,
+    );
   }
 
   return {
@@ -482,6 +674,12 @@ export function scanAppFiles(input: AppScanInput): AppScan {
     dbClient,
     agora,
     notes,
+    objectStorage,
+    s3Disk,
+    s3EnvNames,
+    requiredEnvKeys,
+    pgvectorMigration,
+    config,
   };
 }
 
@@ -508,7 +706,15 @@ export function mergeServices(
  * and scans them. Missing files are treated as absent (empty), never as
  * errors — a fresh checkout may not have them yet.
  */
-export async function scanAppConfig(appRoot: URL): Promise<AppScan> {
+export async function scanAppConfig(
+  appRoot: URL,
+  options: {
+    /** Backend chosen for this run (`--object-storage`); counts as asking for object storage. */
+    objectStorage?: ObjectStorageBackend | undefined;
+    /** Exclusions for this run (`--exclude`), on top of `package.json#sail.exclude`. */
+    exclude?: SailExclude[] | undefined;
+  } = {},
+): Promise<AppScan> {
   const appRootPath = fileURLToPath(appRoot);
 
   let dependencies: Record<string, string> = {};
@@ -545,7 +751,51 @@ export async function scanAppConfig(appRoot: URL): Promise<AppScan> {
     // no config dir — fresh checkout
   }
 
-  return scanAppFiles({ dependencies, envTs, configs });
+  const [migrations, sailConfig] = await Promise.all([
+    readMigrations(join(appRootPath, 'database', 'migrations')),
+    readSailConfig(appRootPath),
+  ]);
+
+  const config: SailConfig = {
+    ...sailConfig.config,
+    exclude: [...new Set([...sailConfig.config.exclude, ...(options.exclude ?? [])])],
+  };
+  const scan = scanAppFiles({
+    dependencies,
+    envTs,
+    configs,
+    migrations,
+    config,
+    objectStorage: options.objectStorage,
+  });
+  scan.notes.push(...sailConfig.problems);
+  return scan;
+}
+
+/**
+ * Every `.ts` / `.js` / `.sql` file below `database/migrations`, keyed by its
+ * path relative to that directory. Missing directory → empty.
+ */
+async function readMigrations(directory: string): Promise<Record<string, string>> {
+  const files: Record<string, string> = {};
+  let entries: string[];
+  try {
+    entries = await readdir(directory, { recursive: true });
+  } catch {
+    return files;
+  }
+  await Promise.all(
+    entries
+      .filter((entry) => /\.(ts|js|mjs|cjs|sql)$/.test(entry))
+      .map(async (entry) => {
+        try {
+          files[entry.split('\\').join('/')] = await readFile(join(directory, entry), 'utf8');
+        } catch {
+          // a directory named like a file, or unreadable — skip it
+        }
+      }),
+  );
+  return files;
 }
 
 /**

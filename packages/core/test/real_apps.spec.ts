@@ -103,10 +103,10 @@ function detailsFor(scan: AppScan, service: string): string[] {
 }
 
 describe('starter-kit app', () => {
-  it('detects postgres, mailpit and minio from the stock configs', async () => {
+  it('detects postgres and mailpit, and leaves the env-selected s3 disk undecided', async () => {
     const scan = await scanAppConfig(fixtureRoot('starter-kit'));
 
-    expect(scan.services).toEqual(['postgres', 'mailpit', 'minio']);
+    expect(scan.services).toEqual(['postgres', 'mailpit']);
     expect(scan.dbClient).toBe('pg');
     expect(detailsFor(scan, 'postgres')).toEqual(['package.json:pg', 'database.ts:pg client']);
     expect(detailsFor(scan, 'mailpit')).toEqual([
@@ -114,12 +114,29 @@ describe('starter-kit app', () => {
       'mail.ts:smtp mailer',
       'SMTP_* env reads',
     ]);
-    expect(detailsFor(scan, 'minio')).toEqual([
-      'package.json:@adonisjs/drive',
-      'drive.ts:s3 disk',
-      'start/env.ts:DRIVE_DISK allows s3',
-      'S3 env reads',
+    // The stock drive config reads `default: env.get('DRIVE_DISK')`, which is
+    // `fs` in most development .env files: sail says so instead of guessing.
+    expect(detailsFor(scan, 'rustfs')).toEqual([]);
+    expect(scan.notes).toEqual([
+      'config/drive.ts picks the disk from the environment (DRIVE_DISK) — sail cannot tell whether s3 is the active one; pass --object-storage=rustfs if it is',
     ]);
+  });
+
+  it('reads which env keys the stock s3 disk takes its settings from', async () => {
+    const scan = await scanAppConfig(fixtureRoot('starter-kit'));
+
+    expect(scan.s3Disk).toEqual({
+      names: {
+        accessKeyId: 'AWS_ACCESS_KEY_ID',
+        secretAccessKey: 'AWS_SECRET_ACCESS_KEY',
+        region: 'AWS_REGION',
+        bucket: 'S3_BUCKET',
+        endpoint: 'S3_ENDPOINT',
+        forcePathStyle: null,
+      },
+      endpointConfigured: false,
+      forcePathStyleConfigured: false,
+    });
   });
 
   it('ignores the env keys inside the mail stub commented-out auth block', async () => {
@@ -140,39 +157,57 @@ describe('starter-kit app', () => {
     expect(scan.notes.join('\n')).not.toContain('APP_NAME');
   });
 
-  it('installs the three services it detected', async () => {
+  it('installs the two services it detected', async () => {
     const path = await materializeApp('starter-kit');
     const { exitCode, payload } = await install(path);
 
     expect(exitCode).toBe(0);
-    expect(payload.services).toEqual(['postgres', 'mailpit', 'minio']);
-    expect(payload.compose).toBe('created with postgres, mailpit, minio');
+    expect(payload.services).toEqual(['postgres', 'mailpit']);
+    expect(payload.compose).toBe('created with postgres, mailpit');
     expect(payload.agentsMd).toBe('created');
     expect(payload.varlock).toBe('skipped (no varlock detected)');
 
     const compose = await readFile(join(path, 'compose.yml'), 'utf8');
     expect(compose).toContain('postgres:');
     expect(compose).toContain('mailpit:');
-    expect(compose).toContain('minio:');
+    expect(compose).not.toContain('rustfs:');
     expect(compose).not.toContain('redis:');
 
     const agentsMd = await readFile(join(path, 'AGENTS.md'), 'utf8');
-    expect(agentsMd).toContain('<!-- sail:start -->');
+    expect(agentsMd).toContain('<!-- sail:start checksum=');
     expect(agentsMd).toContain('node ace sail:up');
+  });
+
+  it('adds object storage when asked, and remembers the choice in package.json', async () => {
+    const path = await materializeApp('starter-kit');
+    const { exitCode, payload } = await install(path, ['--object-storage=rustfs']);
+
+    expect(exitCode).toBe(0);
+    expect(payload.services).toEqual(['postgres', 'mailpit', 'rustfs']);
+    expect(payload.config).toBe('updated');
+    const pkg = JSON.parse(await readFile(join(path, 'package.json'), 'utf8'));
+    expect(pkg.sail).toEqual({ objectStorage: 'rustfs' });
+
+    // The next plain install keeps it: the preference is now committed.
+    const again = await install(path);
+    expect(again.payload.services).toEqual(['postgres', 'mailpit', 'rustfs']);
+    expect(again.payload.compose).toBe('already up to date');
   });
 
   it('adds only the env validation the stock scaffolds never wrote', async () => {
     const path = await materializeApp('starter-kit');
-    const { payload } = await install(path);
+    const { payload } = await install(path, ['--object-storage=rustfs']);
 
     // The lucid/mail/drive configure hooks already declared DB_*, SMTP_* and
-    // AWS_*/S3_BUCKET; the MinIO endpoint has no stock scaffold, so it is the
-    // one key sail introduces.
+    // AWS_*/S3_BUCKET; the endpoint has no stock scaffold, so it is the one
+    // key sail introduces — optional, so production boots without it.
     expect(payload.env).toMatchObject({ validations: ['S3_ENDPOINT'] });
 
     const envTs = await readFile(join(path, 'start', 'env.ts'), 'utf8');
     expect(envTs).toContain('Variables for @adonis-agora/sail local services');
-    expect(envTs).toContain("S3_ENDPOINT: Env.schema.string({ format: 'url', tld: false })");
+    expect(envTs).toContain(
+      "S3_ENDPOINT: Env.schema.string.optional({ format: 'url', tld: false })",
+    );
     // Append-only: the scaffolded declarations are still there, once each.
     expect(envTs.match(/DB_HOST:/g)).toHaveLength(1);
     expect(envTs).toContain("DRIVE_DISK: Env.schema.enum(['fs', 's3'] as const)");
@@ -180,7 +215,7 @@ describe('starter-kit app', () => {
 
   it('fills the .env keys neither .env nor .env.example define', async () => {
     const path = await materializeApp('starter-kit');
-    const { payload } = await install(path);
+    const { payload } = await install(path, ['--object-storage=rustfs']);
 
     // .env.example carries the DB_* block the lucid preset wrote, so those are
     // left alone; everything else the selected services need is new.
@@ -198,7 +233,10 @@ describe('starter-kit app', () => {
 
     const dotEnv = await readFile(join(path, '.env'), 'utf8');
     expect(dotEnv).toContain('SMTP_PORT=1025');
-    expect(dotEnv).toContain('S3_ENDPOINT=http://localhost:9000');
+    expect(dotEnv).toContain('S3_ENDPOINT=http://127.0.0.1:9000');
+    // Every file sail appended to ends with a newline, so the next
+    // `echo KEY=value >> .env` lands on a line of its own.
+    expect(dotEnv.endsWith('\n')).toBe(true);
     // The DB_* block the preset wrote keeps its own values.
     expect(dotEnv).toContain('DB_PORT=5432');
     expect(dotEnv).toContain('DB_USER=postgres');
@@ -212,7 +250,7 @@ describe('starter-kit app', () => {
 
   it('writes the defaults to .env.example only when the checkout has no .env', async () => {
     const path = await materializeApp('starter-kit', false);
-    const { payload } = await install(path);
+    const { payload } = await install(path, ['--object-storage=rustfs']);
 
     // AdonisJS' EnvEditor updates the dotenv files that exist and creates
     // none, so a checkout that never ran `cp .env.example .env` gets the
@@ -220,7 +258,7 @@ describe('starter-kit app', () => {
     expect(payload.env).toMatchObject({ variables: expect.arrayContaining(['S3_ENDPOINT']) });
     expect(await readOrNull(join(path, '.env'))).toBeNull();
     expect(await readFile(join(path, '.env.example'), 'utf8')).toContain(
-      'S3_ENDPOINT=http://localhost:9000',
+      'S3_ENDPOINT=http://127.0.0.1:9000',
     );
   });
 
@@ -240,11 +278,15 @@ describe('starter-kit app', () => {
 });
 
 describe('agora-stack app', () => {
-  it('detects all four services across first-party and Agora configs', async () => {
+  it('detects the three services its configs settle across first-party and Agora configs', async () => {
     const scan = await scanAppConfig(fixtureRoot('agora-stack'));
 
-    expect(scan.services).toEqual(['postgres', 'redis', 'mailpit', 'minio']);
+    expect(scan.services).toEqual(['postgres', 'redis', 'mailpit']);
     expect(scan.dbClient).toBe('pg');
+    // Both s3 disks (drive.ts and media.ts) are picked through DRIVE_DISK.
+    expect(scan.notes).toContain(
+      'config/drive.ts, config/media.ts pick the disk from the environment (DRIVE_DISK) — sail cannot tell whether s3 is the active one; pass --object-storage=rustfs if it is',
+    );
   });
 
   it('reads the pg client out of three connections sharing a hoisted object', async () => {
@@ -265,7 +307,6 @@ describe('agora-stack app', () => {
       { file: 'authz.ts', service: 'postgres', detail: 'lucid store selected (pg)' },
       { file: 'durable.ts', service: 'postgres', detail: 'lucid store selected (pg)' },
       { file: 'media.ts', service: 'postgres', detail: 'lucid store selected (pg)' },
-      { file: 'media.ts', service: 'minio', detail: 's3 disk' },
       { file: 'telescope.ts', service: 'postgres', detail: 'lucid store selected (pg)' },
     ]);
   });
@@ -283,9 +324,9 @@ describe('agora-stack app', () => {
     expect(detailsFor(scan, 'redis')).toContain('redis.ts:redis config');
   });
 
-  it('installs the four services it detected', async () => {
+  it('installs the four services once object storage is asked for', async () => {
     const path = await materializeApp('agora-stack');
-    const { exitCode, payload } = await install(path);
+    const { exitCode, payload } = await install(path, ['--object-storage=minio']);
 
     expect(exitCode).toBe(0);
     expect(payload.services).toEqual(['postgres', 'redis', 'mailpit', 'minio']);
@@ -296,26 +337,30 @@ describe('agora-stack app', () => {
     }
   });
 
-  it('introduces S3_ENDPOINT because the app names its MinIO endpoint MINIO_URL', async () => {
+  it("writes the endpoint under MINIO_URL, the name the app's s3 disk reads", async () => {
     const path = await materializeApp('agora-stack');
-    const { payload } = await install(path);
+    const { payload } = await install(path, ['--object-storage=minio']);
 
+    // The disk sets `endpoint: env.get('MINIO_URL')` and `forcePathStyle:
+    // true` itself, so there is no S3_ENDPOINT to introduce and nothing left
+    // to tell the user to add.
     expect(payload.env).toMatchObject({
-      validations: ['S3_ENDPOINT'],
+      validations: [],
       variables: [
         'AWS_ACCESS_KEY_ID',
         'AWS_SECRET_ACCESS_KEY',
         'AWS_REGION',
         'S3_BUCKET',
-        'S3_ENDPOINT',
+        'MINIO_URL',
       ],
     });
-    expect(payload.notes).toEqual(
-      expect.arrayContaining([expect.stringContaining("add `endpoint: env.get('S3_ENDPOINT')`")]),
+    expect(payload.notes).not.toEqual(
+      expect.arrayContaining([expect.stringContaining('Object storage: add')]),
     );
 
     const envTs = await readFile(join(path, 'start', 'env.ts'), 'utf8');
-    expect(envTs).toContain("S3_ENDPOINT: Env.schema.string({ format: 'url', tld: false })");
+    expect(envTs).not.toContain('S3_ENDPOINT: Env');
+    expect(await readFile(join(path, '.env'), 'utf8')).toContain('MINIO_URL=http://localhost:9000');
     // The app's own declarations survive the edit untouched.
     expect(envTs).toContain('MINIO_URL: Env.schema.string.optional()');
     expect(envTs).toContain("TRANSMIT_TRANSPORT: Env.schema.enum.optional(['memory', 'redis']");
@@ -323,7 +368,7 @@ describe('agora-stack app', () => {
 
   it('leaves the DB, redis and SMTP values the app already has', async () => {
     const path = await materializeApp('agora-stack');
-    await install(path);
+    await install(path, ['--object-storage=minio']);
 
     const dotEnv = await readFile(join(path, '.env'), 'utf8');
     expect(dotEnv).toContain('S3_BUCKET=local');
@@ -335,7 +380,7 @@ describe('agora-stack app', () => {
 
     const example = await readFile(join(path, '.env.example'), 'utf8');
     expect(example).toContain('DB_DATABASE=entretextos');
-    expect(example).toContain('S3_ENDPOINT=http://localhost:9000');
+    expect(example).toContain('MINIO_URL=http://localhost:9000');
   });
 
   it('changes nothing on a second install', async () => {
@@ -368,7 +413,7 @@ describe('sqlite-only app', () => {
       expect.arrayContaining([
         'database.ts uses SQLite — no database container needed',
         'authz.ts selects the lucid store on SQLite — no container needed',
-        'package.json lists @adonisjs/drive but config/drive.ts has no s3 disk — skipping minio',
+        'package.json lists @adonisjs/drive but config/drive.ts has no s3 disk — skipping rustfs',
       ]),
     );
   });

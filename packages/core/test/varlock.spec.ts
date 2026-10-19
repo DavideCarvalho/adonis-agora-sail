@@ -64,6 +64,7 @@ describe('sailEnvKeys / baseAppEnv', () => {
       'DB_DATABASE',
       'REDIS_HOST',
       'REDIS_PORT',
+      'REDIS_PASSWORD',
     ]);
   });
 
@@ -104,7 +105,7 @@ describe('buildSchemaSection', () => {
 describe('ensureSchemaSection', () => {
   it('creates a minimal schema when there is none', () => {
     const { content, added } = ensureSchemaSection(null, ['redis']);
-    expect(added).toEqual(['REDIS_HOST', 'REDIS_PORT']);
+    expect(added).toEqual(['REDIS_HOST', 'REDIS_PORT', 'REDIS_PASSWORD']);
     expect(content).toContain('REDIS_PORT=6379');
     expect(content).toContain('# sail:schema:start');
   });

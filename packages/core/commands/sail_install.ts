@@ -4,19 +4,42 @@ import { fileURLToPath } from 'node:url';
 import { flags } from '@adonisjs/core/ace';
 import type { CommandOptions } from '@adonisjs/core/types/ace';
 
-import { buildAgentsMdSection, upsertAgentsMd } from '../src/agents_md.js';
+import { buildAgentsMdSection, updateAgentsMd } from '../src/agents_md.js';
 import {
   type AppScan,
-  ENV_VALIDATIONS,
+  envValidationFor,
   formatAppScan,
-  MINIO_SETUP_NOTE,
+  objectStorageSetupNote,
   scanAppConfig,
 } from '../src/app_scan.js';
-import { generateComposeFile, mergeComposeFile } from '../src/compose_file.js';
-import { DOTENV_EXAMPLE_FILE_NAME, DOTENV_FILE_NAME, readDotEnvKeySets } from '../src/dotenv.js';
-import { buildStackInfo, formatStackInfo } from '../src/info.js';
-import { isServiceName, SERVICE_NAMES, SERVICES } from '../src/services.js';
-import type { SailServiceName } from '../src/types.js';
+import {
+  generateComposeFile,
+  mergeComposeFile,
+  serviceImageInComposeFile,
+  servicesInComposeFile,
+} from '../src/compose_file.js';
+import {
+  DOTENV_EXAMPLE_FILE_NAME,
+  DOTENV_FILE_NAME,
+  ensureTrailingNewline,
+  readDotEnvKeySets,
+} from '../src/dotenv.js';
+import { isPgvectorImage, officialPostgresMajor, resolveServiceImages } from '../src/images.js';
+import { appEnvOptionsFromScan, buildStackInfo, formatStackInfo } from '../src/info.js';
+import {
+  isSailExclude,
+  OBJECT_STORAGE_EXCLUDE,
+  type SailExclude,
+  updateSailConfig,
+} from '../src/sail_config.js';
+import {
+  isObjectStorageBackend,
+  isServiceName,
+  OBJECT_STORAGE_BACKENDS,
+  SERVICE_NAMES,
+  SERVICES,
+} from '../src/services.js';
+import type { ObjectStorageBackend, SailServiceName } from '../src/types.js';
 import {
   AUDIT_EXTRA_PATTERNS_NOTE,
   baseAppEnv,
@@ -26,8 +49,11 @@ import {
 } from '../src/varlock.js';
 import { SailBaseCommand } from './sail_base_command.js';
 
-/** Keys sail must not print into the committed `.env.example`. */
-const SECRET_LIKE_KEYS = ['DB_PASSWORD', 'AWS_SECRET_ACCESS_KEY', 'REDIS_PASSWORD'];
+/**
+ * Keys sail must not print into the committed `.env.example` — matched by
+ * shape, since the app's s3 disk may call its secret `S3_SECRET_KEY`.
+ */
+const SECRET_LIKE_KEY = /PASSWORD|SECRET/;
 
 /**
  * `node ace sail:install [--services=postgres --services=redis]` — generates
@@ -83,9 +109,9 @@ function mutedLogger(source: { getColors: () => unknown }) {
  * File contents, or null when it does not exist. Used to tell "the codemod
  * edited this" from "the codemod reported success and wrote nothing".
  */
-async function readIfPresent(appRoot: string, relativePath: string): Promise<string | null> {
+async function readIfPresent(...pathSegments: string[]): Promise<string | null> {
   try {
-    return await readFile(join(appRoot, relativePath), 'utf8');
+    return await readFile(join(...pathSegments), 'utf8');
   } catch {
     return null;
   }
@@ -97,45 +123,77 @@ export default class SailInstall extends SailBaseCommand {
   static override options: CommandOptions = { startApp: false };
 
   @flags.array({
-    description:
-      'Services to enable (postgres, mysql, redis, mailpit, minio). Auto-detected when omitted',
+    description: `Services to enable (${SERVICE_NAMES.join(', ')}). Auto-detected when omitted`,
   })
   declare services?: string[];
 
+  @flags.string({
+    description: `Object storage backend (${OBJECT_STORAGE_BACKENDS.join(', ')}) — also asks for object storage. Saved to package.json "sail.objectStorage"`,
+  })
+  declare objectStorage?: string;
+
+  @flags.array({
+    description: `Services auto-detection must leave out (a service name, or "${OBJECT_STORAGE_EXCLUDE}"). Saved to package.json "sail.exclude"`,
+  })
+  declare exclude?: string[];
+
   override async run(): Promise<void> {
     const context = await this.sailContext();
-    const scan = await scanAppConfig(this.app.appRoot);
-    const selected = await this.#selectedServices(scan);
+    const appRoot = fileURLToPath(this.app.appRoot);
+
+    const preferences = this.#preferences();
+    if (!preferences) {
+      return;
+    }
+    const scan = await scanAppConfig(this.app.appRoot, preferences);
+    const configAction =
+      preferences.objectStorage || preferences.exclude.length > 0
+        ? await updateSailConfig(appRoot, preferences)
+        : 'unchanged';
+
+    const existingCompose = await readIfPresent(context.composeFilePath);
+    const picked = await this.#selectedServices(scan);
+    if (!picked) {
+      return;
+    }
+    const notes = [...scan.notes];
+    const selected = this.#reconcileObjectStorage(
+      picked,
+      existingCompose,
+      preferences.objectStorage ?? (this.services?.length ? undefined : scan.config.objectStorage),
+      notes,
+    );
     if (!selected) {
       return;
     }
+    const envOptions = appEnvOptionsFromScan(scan);
+    const images = resolveServiceImages(scan.config, scan.pgvectorMigration !== null);
 
     let action: string;
-    try {
-      const existing = await readFile(context.composeFilePath, 'utf8');
-      const merged = mergeComposeFile(existing, selected);
+    if (existingCompose !== null) {
+      const merged = mergeComposeFile(existingCompose, selected, { images });
       await writeFile(context.composeFilePath, merged.content, 'utf8');
       action =
         merged.added.length > 0
           ? `updated (added ${merged.added.join(', ')})`
           : 'already up to date';
-    } catch {
-      await writeFile(context.composeFilePath, generateComposeFile(selected), 'utf8');
+      notes.push(...this.#imageNotes(merged.content, scan, merged.added));
+    } else {
+      await writeFile(context.composeFilePath, generateComposeFile(selected, { images }), 'utf8');
       action = `created with ${selected.join(', ')}`;
     }
 
-    const agentsMdPath = join(fileURLToPath(this.app.appRoot), 'AGENTS.md');
-    let previous: string | null = null;
-    try {
-      previous = await readFile(agentsMdPath, 'utf8');
-    } catch {
-      previous = null;
-    }
-    const agentsMd = upsertAgentsMd(previous, buildAgentsMdSection());
+    const agentsMdPath = join(appRoot, 'AGENTS.md');
+    const previous = await readIfPresent(agentsMdPath);
+    const agentsMd = updateAgentsMd(previous, buildAgentsMdSection());
     const agentsMdAction =
-      agentsMd === previous ? 'unchanged' : previous === null ? 'created' : 'updated';
-    if (agentsMd !== previous) {
-      await writeFile(agentsMdPath, agentsMd, 'utf8');
+      agentsMd.action === 'kept'
+        ? 'kept (edited by hand — delete the section, markers included, to get the stock text back)'
+        : agentsMd.action === 'appended'
+          ? 'updated'
+          : agentsMd.action;
+    if (agentsMd.content !== previous) {
+      await writeFile(agentsMdPath, agentsMd.content, 'utf8');
     }
 
     let varlockAction = 'skipped (no varlock detected)';
@@ -149,7 +207,7 @@ export default class SailInstall extends SailBaseCommand {
       } catch {
         schemaPrevious = null;
       }
-      const schema = ensureSchemaSection(schemaPrevious, selected);
+      const schema = ensureSchemaSection(schemaPrevious, selected, envOptions);
       const changes: string[] = [];
       if (schema.added.length > 0) {
         changes.push(`added ${schema.added.join(', ')}`);
@@ -176,9 +234,11 @@ export default class SailInstall extends SailBaseCommand {
 
     const envWiring = await this.#wireEnv(scan, selected);
 
-    const notes = [...scan.notes];
-    if (selected.includes('minio') && !notes.includes(MINIO_SETUP_NOTE)) {
-      notes.push(MINIO_SETUP_NOTE);
+    const setupNote = selected.some(isObjectStorageBackend)
+      ? objectStorageSetupNote(scan.s3Disk)
+      : null;
+    if (setupNote && !notes.includes(setupNote)) {
+      notes.push(setupNote);
     }
     if (varlockNote && !notes.includes(varlockNote)) {
       notes.push(varlockNote);
@@ -193,6 +253,7 @@ export default class SailInstall extends SailBaseCommand {
         projectName: context.projectName,
         portOffset: context.portOffset,
         agentsMd: agentsMdAction,
+        config: configAction,
         varlock: varlockAction,
         env: envWiring,
         notes,
@@ -200,10 +261,13 @@ export default class SailInstall extends SailBaseCommand {
       return;
     }
 
-    const info = buildStackInfo(context, selected);
+    const info = buildStackInfo(context, selected, envOptions);
     this.logger.success(`compose.yml ${action} — ${context.composeFilePath}`);
     this.logger.log(formatAppScan(scan));
     this.logger.info(`AGENTS.md ${agentsMdAction}`);
+    if (configAction === 'updated') {
+      this.logger.info('package.json "sail" preferences updated');
+    }
     this.logger.info(`varlock schema ${varlockAction}`);
     this.logger.info(
       `start/env.ts validations ${envWiring.validations.length > 0 ? `added (${envWiring.validations.join(', ')})` : (envWiring.validationsSkipped ?? 'unchanged')}`,
@@ -236,10 +300,11 @@ export default class SailInstall extends SailBaseCommand {
     variablesSkipped?: string | undefined;
   }> {
     const appRoot = fileURLToPath(this.app.appRoot);
-    const defaults = baseAppEnv(selected);
+    const defaults = baseAppEnv(selected, appEnvOptionsFromScan(scan));
     const needed = Object.keys(defaults);
+    const validationOf = (key: string) => envValidationFor(key, scan.s3EnvNames);
     const toValidate = needed.filter(
-      (key) => !scan.declaredEnvKeys.includes(key) && key in ENV_VALIDATIONS,
+      (key) => !scan.declaredEnvKeys.includes(key) && validationOf(key) !== undefined,
     );
 
     let dotEnvKeys = { env: new Set<string>(), example: new Set<string>() };
@@ -276,7 +341,7 @@ export default class SailInstall extends SailBaseCommand {
       } = {
         validations: [],
         variables: [],
-        validationsSkipped: `codemods unavailable — add to start/env.ts by hand: ${toValidate.map((key) => `${key}: ${ENV_VALIDATIONS[key]}`).join('; ')}`,
+        validationsSkipped: `codemods unavailable — add to start/env.ts by hand: ${toValidate.map((key) => `${key}: ${validationOf(key)}`).join('; ')}`,
         variablesSkipped:
           toDefine.length > 0
             ? `codemods unavailable — add to .env by hand: ${toDefine.map((key) => `${key}=${defaults[key]}`).join(' ')}`
@@ -298,7 +363,7 @@ export default class SailInstall extends SailBaseCommand {
         await codemods.defineEnvValidations({
           leadingComment: 'Variables for @adonis-agora/sail local services',
           variables: Object.fromEntries(
-            toValidate.map((key) => [key, ENV_VALIDATIONS[key] as string]),
+            toValidate.map((key) => [key, validationOf(key) as string]),
           ),
         });
       } catch {
@@ -312,7 +377,7 @@ export default class SailInstall extends SailBaseCommand {
       if (after !== null && after !== before) {
         result.validations = toValidate;
       } else {
-        result.validationsSkipped = `not written — add to start/env.ts by hand: ${toValidate.map((key) => `${key}: ${ENV_VALIDATIONS[key]}`).join('; ')}`;
+        result.validationsSkipped = `not written — add to start/env.ts by hand: ${toValidate.map((key) => `${key}: ${validationOf(key)}`).join('; ')}`;
       }
     }
 
@@ -324,7 +389,7 @@ export default class SailInstall extends SailBaseCommand {
       try {
         await codemods.defineEnvVariables(
           Object.fromEntries(toDefine.map((key) => [key, defaults[key] as string])),
-          { omitFromExample: SECRET_LIKE_KEYS.filter((key) => toDefine.includes(key)) },
+          { omitFromExample: toDefine.filter((key) => SECRET_LIKE_KEY.test(key)) },
         );
       } catch {
         // handled below
@@ -333,6 +398,21 @@ export default class SailInstall extends SailBaseCommand {
         readIfPresent(appRoot, DOTENV_FILE_NAME),
         readIfPresent(appRoot, DOTENV_EXAMPLE_FILE_NAME),
       ]);
+      // The codemods' editor joins lines without a final newline, so the
+      // next `echo KEY=value >> .env` would glue onto the last key sail
+      // wrote. Only files the codemod actually changed are touched.
+      await Promise.all(
+        [DOTENV_FILE_NAME, DOTENV_EXAMPLE_FILE_NAME].map(async (file, index) => {
+          const content = after[index];
+          if (content && content !== before[index]) {
+            const terminated = ensureTrailingNewline(content);
+            if (terminated !== content) {
+              await writeFile(join(appRoot, file), terminated, 'utf8');
+              after[index] = terminated;
+            }
+          }
+        }),
+      );
       if (after.some((content, index) => content !== null && content !== before[index])) {
         result.variables = toDefine;
       } else {
@@ -341,6 +421,94 @@ export default class SailInstall extends SailBaseCommand {
     }
 
     return result;
+  }
+
+  /**
+   * Validates `--object-storage` / `--exclude`. Undefined (after failing the
+   * command) when either names something sail does not know.
+   */
+  #preferences():
+    | { objectStorage: ObjectStorageBackend | undefined; exclude: SailExclude[] }
+    | undefined {
+    if (this.objectStorage !== undefined && !isObjectStorageBackend(this.objectStorage)) {
+      this.failJsonAware(
+        `Unknown object storage backend: ${this.objectStorage}`,
+        `Valid backends: ${OBJECT_STORAGE_BACKENDS.join(', ')}`,
+      );
+      return undefined;
+    }
+    const unknown = (this.exclude ?? []).filter((entry) => !isSailExclude(entry));
+    if (unknown.length > 0) {
+      this.failJsonAware(
+        `Unknown service(s) to exclude: ${unknown.join(', ')}`,
+        `Valid: ${[...SERVICE_NAMES, OBJECT_STORAGE_EXCLUDE].join(', ')}`,
+      );
+      return undefined;
+    }
+    return {
+      objectStorage: this.objectStorage,
+      exclude: (this.exclude ?? []).filter(isSailExclude),
+    };
+  }
+
+  /**
+   * One object storage backend per stack. When compose.yml already runs one,
+   * that one stays — sail never deletes a service, and two backends would
+   * fight over the same env keys. Asking for a different one explicitly
+   * (`--object-storage`, `sail.objectStorage`, `--services`) gets the steps
+   * to switch instead. Undefined (after failing) when `--services` names two.
+   */
+  #reconcileObjectStorage(
+    selected: SailServiceName[],
+    existingCompose: string | null,
+    wanted: ObjectStorageBackend | undefined,
+    notes: string[],
+  ): SailServiceName[] | undefined {
+    const backends = selected.filter(isObjectStorageBackend);
+    if (backends.length > 1) {
+      this.failJsonAware(
+        `Pick one object storage backend, not ${backends.join(' and ')}`,
+        `e.g. node ace sail:install --object-storage=${backends[0]}`,
+      );
+      return undefined;
+    }
+    const present = existingCompose
+      ? servicesInComposeFile(existingCompose).find(isObjectStorageBackend)
+      : undefined;
+    const requested = backends[0];
+    if (!present || !requested || requested === present) {
+      return selected;
+    }
+    if (wanted === requested || this.services?.includes(requested)) {
+      notes.push(
+        `compose.yml already runs ${present} for object storage — to switch to ${requested}, remove the ${present} service and its sail-${present} volume from compose.yml (\`node ace sail:down\` first), then re-run install`,
+      );
+    }
+    return selected.map((name) => (name === requested ? present : name));
+  }
+
+  /**
+   * Hints about images sail cannot change in an existing compose file: a
+   * pgvector migration on plain Postgres, and MinIO's withdrawn image.
+   */
+  #imageNotes(compose: string, scan: AppScan, added: SailServiceName[]): string[] {
+    const notes: string[] = [];
+    const postgres = added.includes('postgres')
+      ? null
+      : serviceImageInComposeFile(compose, 'postgres');
+    if (postgres && scan.pgvectorMigration && !isPgvectorImage(postgres)) {
+      const major = officialPostgresMajor(postgres);
+      notes.push(
+        `database/migrations/${scan.pgvectorMigration} creates the pgvector extension, but compose.yml runs ${postgres} — set its image to ${major ? `pgvector/pgvector:pg${major}` : 'a pgvector build of the same major'} (same data layout, the volume keeps working)`,
+      );
+    }
+    const minio = added.includes('minio') ? null : serviceImageInComposeFile(compose, 'minio');
+    if (minio && /^(?:docker\.io\/)?minio\/minio(?::|$)/.test(minio)) {
+      notes.push(
+        `compose.yml runs ${minio}, which MinIO no longer publishes — a machine without it cached cannot pull it. Switch the image to ${SERVICES.minio.image}, or move to another backend (see --object-storage)`,
+      );
+    }
+    return notes;
   }
 
   async #selectedServices(scan: AppScan): Promise<SailServiceName[] | undefined> {

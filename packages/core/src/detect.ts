@@ -2,20 +2,32 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { SERVICE_NAMES, SERVICES } from './services.js';
-import type { SailServiceName } from './types.js';
+import {
+  DEFAULT_OBJECT_STORAGE,
+  OBJECT_STORAGE_DEPENDENCIES,
+  SERVICE_NAMES,
+  SERVICES,
+} from './services.js';
+import type { ObjectStorageBackend, SailServiceName } from './types.js';
 
 /**
  * Picks the services implied by a dependency map (dependencies +
  * devDependencies of the app). Postgres and MySQL are mutually exclusive:
  * when both drivers are present, postgres wins and mysql must be asked for
- * explicitly.
+ * explicitly. An object storage dependency selects `objectStorage` (the
+ * default backend unless the caller says otherwise).
  */
 export function detectServicesFromDependencies(
   dependencies: Record<string, string>,
+  objectStorage: ObjectStorageBackend = DEFAULT_OBJECT_STORAGE,
 ): SailServiceName[] {
-  const detected = SERVICE_NAMES.filter((name) =>
-    SERVICES[name].detectedBy.some((dependency) => dependency in dependencies),
+  const wantsObjectStorage = OBJECT_STORAGE_DEPENDENCIES.some(
+    (dependency) => dependency in dependencies,
+  );
+  const detected = SERVICE_NAMES.filter(
+    (name) =>
+      SERVICES[name].detectedBy.some((dependency) => dependency in dependencies) ||
+      (name === objectStorage && wantsObjectStorage),
   );
 
   if (detected.includes('postgres') && detected.includes('mysql')) {

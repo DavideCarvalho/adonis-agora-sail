@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -7,6 +7,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import SailUp from '../commands/sail_up.js';
 import { DockerCompose, type RunResult } from '../src/docker.js';
 import { createTestApp, fakeDocker, jsonOutput, output, runResult } from './helpers/ace.js';
+
+const objectStorageCompose = `services:
+  rustfs:
+    image: rustfs/rustfs:1.0.3
+  redis:
+    image: redis:7-alpine
+`;
 
 const composeFile = `services:
   postgres:
@@ -22,6 +29,8 @@ type DockerStub = Partial<{
   takenHostPorts: () => Promise<number[]>;
   publishedHostPorts: () => Promise<number[]>;
   portHolders: () => Promise<Map<number, string[]>>;
+  composeServices: () => Promise<string[]>;
+  exec: (service: string, command: string[]) => Promise<RunResult>;
 }>;
 
 /**
@@ -261,5 +270,116 @@ describe('sail:up', () => {
     });
     // No route registered for this app, so no domain is reported.
     expect(jsonOutput(kernel)).not.toHaveProperty('domain');
+  });
+
+  describe('object storage bootstrap', () => {
+    it('creates the bucket inside the container once the stack is healthy', async () => {
+      const { kernel } = await createTestApp({ 'compose.yml': objectStorageCompose });
+      const command = await kernel.create(SailUp, ['--json']);
+      const execs: { service: string; command: string[] }[] = [];
+      useDocker(command, {
+        composeServices: () => Promise.resolve(['rustfs', 'redis']),
+        exec: (service, argv) => {
+          execs.push({ service, command: argv });
+          return Promise.resolve(runResult());
+        },
+      });
+      await command.exec();
+
+      expect(command.exitCode).toBe(0);
+      // Only the backend that needs it: redis has no bootstrap step.
+      expect(execs).toHaveLength(1);
+      expect(execs[0]?.service).toBe('rustfs');
+      expect(execs[0]?.command.join(' ')).toContain('-X PUT http://127.0.0.1:9000/local');
+      expect(jsonOutput(kernel)).toMatchObject({
+        status: 'up',
+        bootstrap: [{ service: 'rustfs', step: "create the 'local' bucket" }],
+      });
+    });
+
+    it('fails, without syncing env, when the bootstrap step fails', async () => {
+      const { kernel, path } = await createTestApp({ 'compose.yml': objectStorageCompose });
+      const command = await kernel.create(SailUp, ['--no-json']);
+      useDocker(command, {
+        composeServices: () => Promise.resolve(['rustfs']),
+        exec: () => Promise.resolve(runResult({ exitCode: 22, stderr: 'curl: (22) 403' })),
+      });
+      await command.exec();
+
+      expect(command.exitCode).toBe(22);
+      expect(output(kernel)).toContain(
+        "sail:up started the stack but could not create the 'local' bucket in rustfs",
+      );
+      expect(output(kernel)).toContain('curl: (22) 403');
+      expect(existsSync(join(path, '.env.local'))).toBe(false);
+    });
+  });
+
+  describe('app env', () => {
+    it("blanks REDIS_PASSWORD so a production password in .env never reaches sail's redis", async () => {
+      const { kernel, path } = await createTestApp({
+        'compose.yml': 'services:\n  redis:\n    image: redis:7-alpine\n',
+      });
+      const command = await kernel.create(SailUp, ['--no-json']);
+      useDocker(command);
+      await command.exec();
+
+      expect(await readFile(join(path, '.env.local'), 'utf8')).toMatch(/^REDIS_PASSWORD=$/m);
+    });
+
+    it('leaves REDIS_PASSWORD out when start/env.ts requires it, since empty would fail boot', async () => {
+      const { kernel, path } = await createTestApp({
+        'compose.yml': 'services:\n  redis:\n    image: redis:7-alpine\n',
+      });
+      await mkdir(join(path, 'start'));
+      await writeFile(
+        join(path, 'start', 'env.ts'),
+        'export default await Env.create(url, {\n  REDIS_PASSWORD: Env.schema.string(),\n})\n',
+      );
+      const command = await kernel.create(SailUp, ['--no-json']);
+      useDocker(command);
+      await command.exec();
+
+      const local = await readFile(join(path, '.env.local'), 'utf8');
+      expect(local).toContain('REDIS_PORT=6379');
+      expect(local).not.toContain('REDIS_PASSWORD');
+    });
+
+    it('writes the object storage env under the names config/drive.ts reads', async () => {
+      const { kernel, path } = await createTestApp({ 'compose.yml': objectStorageCompose });
+      await mkdir(join(path, 'config'));
+      await writeFile(
+        join(path, 'config', 'drive.ts'),
+        `export default defineConfig({
+  default: env.get('DRIVE_DISK'),
+  services: {
+    s3: services.s3({
+      credentials: {
+        accessKeyId: env.get('S3_ACCESS_KEY'),
+        secretAccessKey: env.get('S3_SECRET_KEY'),
+      },
+      region: 'us-east-1',
+      bucket: env.get('S3_BUCKET'),
+      endpoint: env.get('S3_URL'),
+      forcePathStyle: env.get('S3_PATH_STYLE'),
+    }),
+  },
+})
+`,
+      );
+      const command = await kernel.create(SailUp, ['--no-json']);
+      useDocker(command, { composeServices: () => Promise.resolve(['rustfs', 'redis']) });
+      await command.exec();
+
+      const local = await readFile(join(path, '.env.local'), 'utf8');
+      expect(local).toContain('S3_ACCESS_KEY=sail');
+      expect(local).toContain('S3_SECRET_KEY=password');
+      expect(local).toContain('S3_BUCKET=local');
+      expect(local).toContain('S3_URL=http://127.0.0.1:9000');
+      expect(local).toContain('S3_PATH_STYLE=true');
+      // Nothing under names the app never reads — the region is a literal.
+      expect(local).not.toContain('AWS_');
+      expect(local).not.toContain('S3_ENDPOINT');
+    });
   });
 });

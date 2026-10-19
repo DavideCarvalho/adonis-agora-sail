@@ -13,6 +13,7 @@ import {
   resolveDomainHostnames,
   writeRoute,
 } from '../src/proxy_state.js';
+import { SERVICES } from '../src/services.js';
 import { resolveSharePort } from '../src/share.js';
 import { SailBaseCommand } from './sail_base_command.js';
 
@@ -80,6 +81,27 @@ export default class SailUp extends SailBaseCommand {
       return;
     }
 
+    // One-shot setup a backend cannot do from its own environment (the
+    // RustFS / MinIO bucket). Every step is idempotent, so it simply runs on
+    // every `up`, after the healthchecks passed.
+    const bootstrapped: { service: string; step: string }[] = [];
+    for (const name of await docker.composeServices()) {
+      const bootstrap = SERVICES[name].bootstrap;
+      if (!bootstrap) {
+        continue;
+      }
+      const step = await docker.exec(name, bootstrap.command);
+      if (step.exitCode !== 0) {
+        this.failJsonAware(
+          `sail:up started the stack but could not ${bootstrap.description} in ${name}:\n${this.tailLines(step.stderr || step.stdout)}`,
+          `See \`node ace sail:logs ${name}\`; re-run \`node ace sail:up\` once it is healthy`,
+          step.exitCode,
+        );
+        return;
+      }
+      bootstrapped.push({ service: name, step: bootstrap.description });
+    }
+
     const { info } = await resolveStackInfo(this.app.appRoot);
 
     const synced = await syncSailLocalEnvs(fileURLToPath(this.app.appRoot), info.appEnv);
@@ -88,12 +110,21 @@ export default class SailUp extends SailBaseCommand {
     const domain = await this.#refreshDomain(info.projectName);
 
     if (this.wantsJson) {
-      this.printJson({ status: 'up', envSync: synced, ...(domain ? { domain } : {}), ...info });
+      this.printJson({
+        status: 'up',
+        envSync: synced,
+        ...(bootstrapped.length > 0 ? { bootstrap: bootstrapped } : {}),
+        ...(domain ? { domain } : {}),
+        ...info,
+      });
       return;
     }
 
     this.logger.success(`Sail stack "${info.projectName}" is up`);
     this.logger.info(`env: ${envSync}`);
+    for (const step of bootstrapped) {
+      this.logger.info(`${step.service}: ${step.step} (idempotent)`);
+    }
     for (const file of encrypted) {
       this.logger.warning(encryptedEnvWarning(file.file));
     }

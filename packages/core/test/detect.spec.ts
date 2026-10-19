@@ -22,18 +22,23 @@ describe('detectServicesFromDependencies', () => {
     ]);
   });
 
-  it('detects redis, mailpit and minio from their packages', () => {
+  it('detects redis, mailpit and object storage from their packages', () => {
     expect(
       detectServicesFromDependencies({
         '@adonisjs/redis': '^3.0.0',
         '@adonisjs/mail': '^9.0.0',
         '@adonisjs/drive': '^3.0.0',
       }),
-    ).toEqual(['redis', 'mailpit', 'minio']);
+    ).toEqual(['redis', 'mailpit', 'rustfs']);
   });
 
   it('detects queue and s3-adjacent packages too', () => {
     expect(detectServicesFromDependencies({ bullmq: '^5.0.0' })).toEqual(['redis']);
-    expect(detectServicesFromDependencies({ '@aws-sdk/client-s3': '^3.0.0' })).toEqual(['minio']);
+    expect(detectServicesFromDependencies({ '@aws-sdk/client-s3': '^3.0.0' })).toEqual(['rustfs']);
+  });
+
+  it('fills the object storage slot with the backend asked for', () => {
+    expect(detectServicesFromDependencies({ flydrive: '^1.0.0' }, 'garage')).toEqual(['garage']);
+    expect(detectServicesFromDependencies({ pg: '^8.0.0' }, 'garage')).toEqual(['postgres']);
   });
 });

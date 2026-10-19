@@ -2,6 +2,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { type AppEnvOptions, serviceAppEnv } from './app_env.js';
 import { resolveHostPorts } from './ports.js';
 import { SERVICES } from './services.js';
 import type { SailServiceDefinition, SailServiceName } from './types.js';
@@ -145,10 +146,10 @@ export async function detectVarlock(appRoot: URL): Promise<VarlockDetection> {
  * Union of the env keys the given services need the app to set, in service
  * order. Values never depend on ports — only the keys are read here.
  */
-export function sailEnvKeys(services: SailServiceName[]): string[] {
+export function sailEnvKeys(services: SailServiceName[], options: AppEnvOptions = {}): string[] {
   const keys: string[] = [];
   for (const name of services) {
-    for (const key of Object.keys(SERVICES[name].appEnv({}))) {
+    for (const key of Object.keys(serviceAppEnv(name, {}, options))) {
       if (!keys.includes(key)) {
         keys.push(key);
       }
@@ -162,10 +163,13 @@ export function sailEnvKeys(services: SailServiceName[]): string[] {
  * values `sail:sync-env` writes there. Worktrees resolve the same keys with
  * the worktree offset applied.
  */
-export function baseAppEnv(services: SailServiceName[]): Record<string, string> {
+export function baseAppEnv(
+  services: SailServiceName[],
+  options: AppEnvOptions = {},
+): Record<string, string> {
   const env: Record<string, string> = {};
   for (const name of services) {
-    Object.assign(env, SERVICES[name].appEnv(resolveHostPorts(SERVICES[name].ports, 0)));
+    Object.assign(env, serviceAppEnv(name, resolveHostPorts(SERVICES[name].ports, 0), options));
   }
   return env;
 }
@@ -199,13 +203,16 @@ function schemaItemBlock(
  * values. The defaults are worktree-agnostic on purpose — live per-worktree
  * ports are written to `.env.local`, which overrides them.
  */
-export function buildSchemaSection(services: SailServiceName[]): string {
-  const defaults = baseAppEnv(services);
+export function buildSchemaSection(
+  services: SailServiceName[],
+  options: AppEnvOptions = {},
+): string {
+  const defaults = baseAppEnv(services, options);
   const blocks: string[] = [];
   for (const name of services) {
     const service = SERVICES[name];
     let first = true;
-    for (const key of Object.keys(service.appEnv({}))) {
+    for (const key of Object.keys(serviceAppEnv(name, {}, options))) {
       blocks.push(schemaItemBlock(service, key, defaults[key] ?? '', first));
       first = false;
     }
@@ -249,6 +256,7 @@ export interface SchemaSectionResult {
 export function ensureSchemaSection(
   existing: string | null,
   services: SailServiceName[],
+  options: AppEnvOptions = {},
 ): SchemaSectionResult {
   if (!existing || existing.trim().length === 0) {
     const header = [
@@ -259,25 +267,25 @@ export function ensureSchemaSection(
       SCHEMA_ROOT_DIVIDER,
       '',
     ].join('\n');
-    const content = `${header}${buildSchemaSection(services)}\n`;
-    return { content, added: sailEnvKeys(services), auditPatterns: 'created' };
+    const content = `${header}${buildSchemaSection(services, options)}\n`;
+    return { content, added: sailEnvKeys(services, options), auditPatterns: 'created' };
   }
 
   const audited = ensureAuditExtraPatterns(existing);
   const body = audited.content;
   const present = presentEnvKeys(body);
-  const missing = sailEnvKeys(services).filter((key) => !present.has(key));
+  const missing = sailEnvKeys(services, options).filter((key) => !present.has(key));
   if (missing.length === 0) {
     return { content: body, added: [], auditPatterns: audited.action };
   }
 
-  const defaults = baseAppEnv(services);
+  const defaults = baseAppEnv(services, options);
   const missingSet = new Set(missing);
   const blocks: string[] = [];
   for (const name of services) {
     const service = SERVICES[name];
     let first = true;
-    for (const key of Object.keys(service.appEnv({}))) {
+    for (const key of Object.keys(serviceAppEnv(name, {}, options))) {
       if (missingSet.has(key)) {
         blocks.push(schemaItemBlock(service, key, defaults[key] ?? '', first));
       }
