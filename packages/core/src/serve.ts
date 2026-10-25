@@ -45,6 +45,8 @@ export interface ServePaths {
   dir: string;
   stateFile: string;
   logFile: string;
+  /** Held while one caller decides whether to start, so concurrent callers never double-start. */
+  lockFile: string;
 }
 
 /** `~/.sail/serve/<project>.json` and `.log`. */
@@ -54,6 +56,7 @@ export function servePaths(projectName: string, home: string = sailHomeDir()): S
     dir,
     stateFile: join(dir, `${projectName}.json`),
     logFile: join(dir, `${projectName}.log`),
+    lockFile: join(dir, `${projectName}.lock`),
   };
 }
 
@@ -71,7 +74,10 @@ export function serveArgs(mode: ServeMode): string[] {
 export async function readServeState(paths: ServePaths): Promise<ServeState | null> {
   try {
     const parsed = JSON.parse(await readFile(paths.stateFile, 'utf8')) as ServeState;
-    return typeof parsed.pid === 'number' && typeof parsed.port === 'number' ? parsed : null;
+    // pid 0/1 would make `kill(-pid)` signal our own group or everything: never trust them.
+    return Number.isInteger(parsed.pid) && parsed.pid > 1 && isValidPort(parsed.port)
+      ? parsed
+      : null;
   } catch {
     return null;
   }
@@ -84,6 +90,66 @@ export async function writeServeState(paths: ServePaths, state: ServeState): Pro
 
 export async function clearServeState(paths: ServePaths): Promise<void> {
   await rm(paths.stateFile, { force: true });
+}
+
+/** A TCP port a process can listen on. */
+export function isValidPort(port: unknown): port is number {
+  return typeof port === 'number' && Number.isInteger(port) && port >= 1 && port <= 65_535;
+}
+
+/**
+ * Takes the per-project lock (`<project>.lock`, created exclusively), waiting
+ * up to `timeoutMs` for another holder. A lock whose holder process is gone is
+ * stale and taken over. Resolves with the release function; rejects on timeout.
+ */
+export async function acquireServeLock(
+  paths: ServePaths,
+  options: {
+    timeoutMs: number;
+    alive?: (pid: number) => boolean;
+    sleep?: (ms: number) => Promise<void>;
+  },
+): Promise<() => Promise<void>> {
+  const alive = options.alive ?? isProcessAlive;
+  const sleep = options.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+  await mkdir(paths.dir, { recursive: true });
+  const deadline = Date.now() + options.timeoutMs;
+  const token = `${process.pid}:${Date.now()}:${Math.random()}`;
+  for (;;) {
+    try {
+      const handle = await open(paths.lockFile, 'wx');
+      await handle.writeFile(JSON.stringify({ pid: process.pid, token }), 'utf8');
+      await handle.close();
+      return async () => {
+        try {
+          const held = JSON.parse(await readFile(paths.lockFile, 'utf8')) as { token?: string };
+          if (held.token === token) {
+            await rm(paths.lockFile, { force: true });
+          }
+        } catch {
+          // already released
+        }
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+        throw error;
+      }
+    }
+    let holder: number | null = null;
+    try {
+      holder = (JSON.parse(await readFile(paths.lockFile, 'utf8')) as { pid?: number }).pid ?? null;
+    } catch {
+      // half-written or just released: retry
+    }
+    if (holder !== null && !alive(holder)) {
+      await rm(paths.lockFile, { force: true });
+      continue;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(`another sail:serve is still starting this app (lock ${paths.lockFile})`);
+    }
+    await sleep(200);
+  }
 }
 
 /** Whether a process id is alive (signal 0 probes without signalling). */
@@ -140,7 +206,8 @@ export interface StartServeOptions {
 export async function startServe(options: StartServeOptions): Promise<ServeState> {
   const spawn = options.spawn ?? nodeSpawn;
   await mkdir(options.paths.dir, { recursive: true });
-  const log = await open(options.paths.logFile, 'a');
+  // Truncated per start: the log (and any failure tail quoted from it) is this process's alone.
+  const log = await open(options.paths.logFile, 'w');
   try {
     const child = spawn(process.execPath, serveArgs(options.mode), {
       cwd: options.appRoot,
@@ -192,8 +259,8 @@ export async function waitForServe(
 
 /**
  * Stops the whole process group (`serve` forks the app and, with `--hmr`, a
- * Vite server): SIGTERM, then SIGKILL after the grace period. Always clears
- * the state file.
+ * Vite server): SIGTERM, then SIGKILL after the grace period. Clears the state
+ * file when it still describes this process.
  */
 export async function stopServe(
   state: ServeState,
@@ -231,9 +298,18 @@ export async function stopServe(
     if (alive(state.pid)) {
       signalGroup('SIGKILL');
       forced = true;
+      // Let the kernel reap it and release the port before anyone re-probes (e.g. --restart).
+      const killDeadline = Date.now() + 2000;
+      while (alive(state.pid) && Date.now() < killDeadline) {
+        await sleep(100);
+      }
     }
   }
-  await clearServeState(paths);
+  // Only clear the entry this call was about: a newer one written meanwhile is someone else's.
+  const recorded = await readServeState(paths);
+  if (!recorded || recorded.pid === state.pid) {
+    await clearServeState(paths);
+  }
   return { stopped: wasAlive, forced };
 }
 

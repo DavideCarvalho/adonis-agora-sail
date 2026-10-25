@@ -2,6 +2,7 @@ import { mkdtemp } from 'node:fs/promises';
 import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { AceFactory } from '@adonisjs/core/factories';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import SailServe from '../commands/sail_serve.js';
@@ -65,10 +66,12 @@ afterEach(async () => {
 
 async function app(ace = ACE_THAT_SERVES) {
   const port = await freePort();
-  const { kernel, path } = await createTestApp({ ace, '.env': `PORT=${port}\n` });
+  const { path } = await createTestApp({ ace, '.env': `PORT=${port}\n` });
+  // A kernel per run, like separate `node ace` processes: concurrent runs must not share a logger.
   const run = async (...args: string[]) => {
+    const kernel = await new AceFactory().make(new URL(`file://${path}/`));
+    kernel.ui.switchMode('raw');
     const command = await kernel.create(SailServe, ['--json', ...args]);
-    kernel.ui.logger.flushLogs();
     await command.exec();
     return { exitCode: command.exitCode, json: jsonOutput(kernel) as Record<string, any> };
   };
@@ -162,6 +165,34 @@ describe('sail:serve', () => {
     expect(result.exitCode).toBe(1);
     expect(result.json.error).toMatch(/exited before answering/);
     expect(result.json.hint).toContain('E_MISSING_ENV_VALUE: APP_KEY');
+    expect(await readServeState(servePaths('shop'))).toBeNull();
+  });
+
+  it('starts exactly one process when two callers race', async () => {
+    const { port, run } = await app();
+
+    const [a, b] = await Promise.all([run('--by', 'a'), run('--by', 'b')]);
+
+    expect(a.exitCode).toBe(0);
+    expect(b.exitCode).toBe(0);
+    expect([a.json.reused, b.json.reused].sort()).toEqual([false, true]);
+    expect(a.json.pid).toBe(b.json.pid);
+    expect(await isPortOpen(port)).toBe(true);
+  });
+
+  it('validates --port, --wait and the serve mode before touching anything', async () => {
+    const { run } = await app();
+
+    expect((await run('--port', '70000')).json.error).toBe(
+      '--port must be an integer between 1 and 65535',
+    );
+    expect((await run('--port', '0')).json.error).toBe(
+      '--port must be an integer between 1 and 65535',
+    );
+    expect((await run('--wait', '0')).json.error).toBe(
+      '--wait must be a positive number of seconds',
+    );
+    expect((await run('--watch', '--no-hmr')).json.error).toBe('Choose one of --watch or --no-hmr');
     expect(await readServeState(servePaths('shop'))).toBeNull();
   });
 

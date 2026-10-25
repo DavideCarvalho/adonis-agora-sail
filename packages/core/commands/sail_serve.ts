@@ -3,9 +3,12 @@ import { flags } from '@adonisjs/core/ace';
 import type { CommandOptions } from '@adonisjs/core/types/ace';
 
 import {
+  acquireServeLock,
+  isValidPort,
   readServeState,
   SERVE_READY_TIMEOUT_MS,
   type ServeMode,
+  type ServePaths,
   type ServeState,
   serveHealth,
   serveLogTail,
@@ -15,6 +18,7 @@ import {
   waitForServe,
 } from '../src/serve.js';
 import { isPortOpen, resolveSharePort } from '../src/share.js';
+import type { SailContext } from '../src/types.js';
 import { SailBaseCommand } from './sail_base_command.js';
 
 /**
@@ -84,14 +88,25 @@ export default class SailServe extends SailBaseCommand {
       this.failJsonAware('Choose one of --status, --stop or --restart');
       return;
     }
+    if (this.watch && this.hmr === false) {
+      this.failJsonAware('Choose one of --watch or --no-hmr', '--watch already replaces HMR');
+      return;
+    }
+    if (this.port !== undefined && !isValidPort(this.port)) {
+      this.failJsonAware('--port must be an integer between 1 and 65535');
+      return;
+    }
+    if (!Number.isFinite(this.wait) || this.wait <= 0) {
+      this.failJsonAware('--wait must be a positive number of seconds');
+      return;
+    }
 
     const context = await this.sailContext();
-    const appRoot = fileURLToPath(this.app.appRoot);
     const paths = servePaths(context.projectName);
-    const current = await readServeState(paths);
-    const health = current ? await serveHealth(current) : 'dead';
 
     if (this.status) {
+      const current = await readServeState(paths);
+      const health = current ? await serveHealth(current) : 'dead';
       this.#report(
         current && health !== 'dead'
           ? { ...current, running: health === 'running', health }
@@ -99,6 +114,31 @@ export default class SailServe extends SailBaseCommand {
       );
       return;
     }
+
+    // Everything that may start or stop the app runs under the per-project lock:
+    // two callers that both found "nothing running" would otherwise both spawn.
+    let release: () => Promise<void>;
+    try {
+      release = await acquireServeLock(paths, { timeoutMs: (this.wait + 15) * 1000 });
+    } catch (error) {
+      this.failJsonAware(
+        (error as Error).message,
+        'Re-run in a moment, or check `node ace sail:serve --status`',
+      );
+      return;
+    }
+    try {
+      await this.#underLock(context, paths);
+    } finally {
+      await release();
+    }
+  }
+
+  async #underLock(context: SailContext, paths: ServePaths): Promise<void> {
+    const appRoot = fileURLToPath(this.app.appRoot);
+    // Read only now: whoever held the lock before us may just have started (or stopped) it.
+    const current = await readServeState(paths);
+    const health = current ? await serveHealth(current) : 'dead';
 
     if (this.stop || this.restart) {
       const result = current ? await stopServe(current, paths) : { stopped: false, forced: false };
@@ -114,12 +154,14 @@ export default class SailServe extends SailBaseCommand {
       this.#report({ ...current, running: true, reused: true });
       return;
     } else if (current && health === 'starting') {
-      // Someone else's start is still booting: wait for it instead of racing a second process.
+      // A start from a caller that crashed mid-boot (its lock is gone): give it the wait, then replace it.
       const settled = await waitForServe(current, this.wait * 1000);
       if (settled === 'running') {
         this.#report({ ...current, running: true, reused: true });
         return;
       }
+      await stopServe(current, paths);
+    } else if (current) {
       await stopServe(current, paths);
     }
 

@@ -6,8 +6,10 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  acquireServeLock,
   clearServeState,
   isProcessAlive,
+  isValidPort,
   readServeState,
   type ServeState,
   serveArgs,
@@ -65,6 +67,7 @@ describe('servePaths / serveArgs', () => {
       dir: '/h/serve',
       stateFile: '/h/serve/shop-feature.json',
       logFile: '/h/serve/shop-feature.log',
+      lockFile: '/h/serve/shop-feature.lock',
     });
   });
 
@@ -241,5 +244,123 @@ describe('startServe', () => {
     expect(result.stopped).toBe(true);
     expect(isProcessAlive(entry.pid)).toBe(false);
     expect(await serveHealth(entry)).toBe('dead');
+  });
+});
+
+describe('state validation', () => {
+  it('rejects entries whose pid could signal a whole group, or whose port is not a port', async () => {
+    const paths = servePaths('shop', await sailHome());
+    for (const bad of [
+      { pid: 0 },
+      { pid: 1 },
+      { pid: -5 },
+      { port: 0 },
+      { port: 70_000 },
+      { pid: 1.5 },
+    ]) {
+      await writeServeState(paths, state(bad));
+      expect(await readServeState(paths)).toBeNull();
+    }
+    expect(isValidPort(3333)).toBe(true);
+    expect(isValidPort(0)).toBe(false);
+    expect(isValidPort(65_536)).toBe(false);
+  });
+});
+
+describe('acquireServeLock', () => {
+  it('is exclusive: a second caller waits until the first releases', async () => {
+    const paths = servePaths('shop', await sailHome());
+    const releaseFirst = await acquireServeLock(paths, { timeoutMs: 1000 });
+    let secondHeld = false;
+    const second = acquireServeLock(paths, { timeoutMs: 5000 }).then((release) => {
+      secondHeld = true;
+      return release;
+    });
+    await new Promise((r) => setTimeout(r, 400));
+    expect(secondHeld).toBe(false);
+    await releaseFirst();
+    const releaseSecond = await second;
+    expect(secondHeld).toBe(true);
+    await releaseSecond();
+  });
+
+  it('times out while a live holder keeps it', async () => {
+    const paths = servePaths('shop', await sailHome());
+    const release = await acquireServeLock(paths, { timeoutMs: 1000 });
+    await expect(acquireServeLock(paths, { timeoutMs: 300 })).rejects.toThrow(/still starting/);
+    await release();
+  });
+
+  it('takes over a lock whose holder process is gone', async () => {
+    const paths = servePaths('shop', await sailHome());
+    await acquireServeLock(paths, { timeoutMs: 1000 }); // never released
+    const release = await acquireServeLock(paths, { timeoutMs: 1000, alive: () => false });
+    await release();
+  });
+
+  it('release only removes its own lock', async () => {
+    const paths = servePaths('shop', await sailHome());
+    const stale = await acquireServeLock(paths, { timeoutMs: 1000 });
+    const fresh = await acquireServeLock(paths, { timeoutMs: 1000, alive: () => false });
+    await stale();
+    await expect(acquireServeLock(paths, { timeoutMs: 200 })).rejects.toThrow();
+    await fresh();
+  });
+});
+
+describe('stopServe and newer entries', () => {
+  it('leaves an entry written by someone else in place', async () => {
+    const paths = servePaths('shop', await sailHome());
+    await writeServeState(paths, state({ pid: 5555 }));
+
+    await stopServe(state({ pid: 4242 }), paths, { alive: () => false });
+
+    expect((await readServeState(paths))?.pid).toBe(5555);
+  });
+
+  it('waits for the process to be reaped after SIGKILL', async () => {
+    const paths = servePaths('shop', await sailHome());
+    let killed = false;
+    let checksAfterKill = 0;
+    await stopServe(state(), paths, {
+      graceMs: 0,
+      alive: () => {
+        if (!killed) return true;
+        return ++checksAfterKill < 3;
+      },
+      kill: (_pid, signal) => {
+        if (signal === 'SIGKILL') killed = true;
+      },
+      sleep: async () => {},
+    });
+    expect(checksAfterKill).toBe(3);
+  });
+});
+
+describe('startServe log', () => {
+  it('truncates the log on every start', async () => {
+    const paths = servePaths('shop', await sailHome());
+    const fakeSpawn: any = () => Object.assign(new EventEmitter(), { pid: 7777, unref() {} });
+    await writeFile(paths.logFile.replace('shop.log', '.keep'), '').catch(() => {});
+    await startServe({
+      appRoot: '/a',
+      projectName: 'shop',
+      port: 4000,
+      mode: 'hmr',
+      startedBy: null,
+      paths,
+      spawn: fakeSpawn,
+    });
+    await writeFile(paths.logFile, 'old run crashed\n', 'utf8');
+    await startServe({
+      appRoot: '/a',
+      projectName: 'shop',
+      port: 4000,
+      mode: 'hmr',
+      startedBy: null,
+      paths,
+      spawn: fakeSpawn,
+    });
+    expect(await readFile(paths.logFile, 'utf8')).toBe('');
   });
 });
