@@ -29,7 +29,7 @@ whether the process they see is safe to kill.
   lands while the app is still booting waits for that boot instead of racing a
   second process.
 - **`--stop` ends it** for everyone: the whole process group (`serve`, the
-  forked app, Vite) gets SIGTERM, and SIGKILL after 10 seconds.
+  forked app, Vite) gets SIGINT (what `serve` treats as Ctrl+C; it ignores SIGTERM), and SIGKILL after 10 seconds.
 
 ```json
 {
@@ -92,10 +92,25 @@ VITE_API_URL=https://preview.example.dev node ace sail:serve --by dev-agent
 ## Failures
 
 An app that exits before answering, or does not answer within `--wait`
-seconds (default 120, then sail stops it), fails with exit code `1` and the
-last lines of its log in `hint` — usually the env validation or the
-connection error that killed the boot. Either way the entry is cleared, so
-the next call starts fresh.
+seconds (default 120, then sail stops it), fails with exit code `1`. The
+`hint` carries the lines of the log that name the cause — colour stripped —
+or its last lines when none does:
+
+```json
+{
+  "error": "node ace serve did not answer on :3402 within 30s (stopped it)",
+  "hint": "Last log lines (~/.sail/serve/shop-feature-login.log):\nℹ EnvValidationException: Validation failed for one or more environment variables\n◉ - Missing environment variable \"APP_KEY\""
+}
+```
+
+Either way the entry is cleared, so the next call starts fresh.
+
+<Callout>
+  With `--hmr` or `--watch`, `serve` itself stays alive when the app crashes on
+  boot — it keeps watching for the fix. Sail therefore sees "alive but not
+  answering" and reports after the full `--wait`. In scripts and agents, a
+  shorter `--wait` (30 is plenty for most apps) fails faster.
+</Callout>
 
 ## State
 

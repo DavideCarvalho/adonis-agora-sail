@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -144,7 +144,7 @@ describe('stopServe', () => {
     });
 
     expect(signals).toEqual([
-      [-4242, 'SIGTERM'],
+      [-4242, 'SIGINT'],
       [-4242, 'SIGKILL'],
     ]);
     expect(result).toEqual({ stopped: true, forced: true });
@@ -362,5 +362,38 @@ describe('startServe log', () => {
       spawn: fakeSpawn,
     });
     expect(await readFile(paths.logFile, 'utf8')).toBe('');
+  });
+});
+
+describe('serveLogTail', () => {
+  it('strips colour and surfaces the cause lines over the plain tail', async () => {
+    const paths = servePaths('shop', await sailHome());
+    await mkdir(paths.dir, { recursive: true });
+    await writeFile(
+      paths.logFile,
+      [
+        '\u001b[2m[ info ]\u001b[22m starting HTTP server...',
+        '\u001b[31mEnvValidationException\u001b[39m: Validation failed for one or more environment variables',
+        '- Missing environment variable "APP_KEY"',
+        '   17 ┃    APP_KEY: Env.schema.string(),',
+        '[ info ] watching file system for changes...',
+      ].join('\n'),
+      'utf8',
+    );
+
+    expect(await serveLogTail(paths)).toBe(
+      [
+        'EnvValidationException: Validation failed for one or more environment variables',
+        '- Missing environment variable "APP_KEY"',
+      ].join('\n'),
+    );
+  });
+
+  it('falls back to the last lines when nothing names a cause', async () => {
+    const paths = servePaths('shop', await sailHome());
+    await mkdir(paths.dir, { recursive: true });
+    await writeFile(paths.logFile, ['one', 'two', 'three'].join('\n'), 'utf8');
+
+    expect(await serveLogTail(paths, 2)).toBe('two\nthree');
   });
 });

@@ -1,6 +1,7 @@
 import { spawn as nodeSpawn } from 'node:child_process';
 import { mkdir, open, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { stripVTControlCharacters } from 'node:util';
 
 import { sailHomeDir } from './proxy.js';
 import { isPortOpen as probePort } from './share.js';
@@ -8,7 +9,7 @@ import { isPortOpen as probePort } from './share.js';
 /** How long `sail:serve` waits, by default, for the app to answer on its port. */
 export const SERVE_READY_TIMEOUT_MS = 120_000;
 
-/** How long `stop` waits after SIGTERM before it sends SIGKILL. */
+/** How long `stop` waits after SIGINT before it sends SIGKILL. */
 export const SERVE_STOP_GRACE_MS = 10_000;
 
 /**
@@ -259,7 +260,7 @@ export async function waitForServe(
 
 /**
  * Stops the whole process group (`serve` forks the app and, with `--hmr`, a
- * Vite server): SIGTERM, then SIGKILL after the grace period. Clears the state
+ * Vite server): SIGINT — what `serve` handles as Ctrl+C — then SIGKILL after the grace period. Clears the state
  * file when it still describes this process.
  */
 export async function stopServe(
@@ -290,7 +291,8 @@ export async function stopServe(
   let forced = false;
   const wasAlive = alive(state.pid);
   if (wasAlive) {
-    signalGroup('SIGTERM');
+    // SIGINT, not SIGTERM: `node ace serve` shuts down on Ctrl+C semantics and ignores SIGTERM.
+    signalGroup('SIGINT');
     const deadline = Date.now() + (options.graceMs ?? SERVE_STOP_GRACE_MS);
     while (alive(state.pid) && Date.now() < deadline) {
       await sleep(250);
@@ -313,12 +315,29 @@ export async function stopServe(
   return { stopped: wasAlive, forced };
 }
 
-/** Last lines of the serve log, for failure messages. */
+/** Lines that carry the actual cause in Adonis/Node boot failures. */
+const CAUSE_PATTERN = /\b(error|exception|missing|cannot|failed|refused|E_[A-Z_]+)\b/i;
+
+/**
+ * The part of the serve log a failure message needs, colour stripped: the
+ * lines that name the cause (env validation, connection refused, a thrown
+ * error) when there are any, otherwise the last lines. A dev server keeps
+ * logging after the app dies (`watching file system for changes…`), so the
+ * plain tail alone often misses the one line that matters.
+ */
 export async function serveLogTail(paths: ServePaths, max = 15): Promise<string> {
+  let text: string;
   try {
-    const lines = (await readFile(paths.logFile, 'utf8')).split('\n').filter((l) => l.trim());
-    return lines.slice(-max).join('\n');
+    text = await readFile(paths.logFile, 'utf8');
   } catch {
     return '';
   }
+  // `serve` logs in colour; failure hints must be plain text.
+  const lines = stripVTControlCharacters(text)
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .filter((line) => line.trim());
+  const causes = lines.filter((line) => CAUSE_PATTERN.test(line));
+  const picked = causes.length > 0 ? [...new Set(causes)].slice(0, 8) : lines.slice(-max);
+  return picked.join('\n');
 }
