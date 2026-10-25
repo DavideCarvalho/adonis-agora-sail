@@ -167,7 +167,7 @@ keys the framework reads itself appear only as `KEY: Env.schema.…()` in
 
 ```bash
 node ace sail:sync-env  # re-sync ports without touching containers
-varlock run -- node ace serve --hmr        # boot with resolved + validated env
+varlock run -- node ace sail:serve         # boot with resolved + validated env, shared per worktree
 varlock run -- node ace migration:run      # same for migrations
 ```
 
