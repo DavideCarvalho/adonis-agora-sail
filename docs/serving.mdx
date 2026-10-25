@@ -1,0 +1,105 @@
+---
+title: Serving
+description: sail:serve runs the app in the background once per worktree — started by whoever comes first, reused by everyone else, stopped by whoever finishes.
+icon: Play
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+```bash
+node ace sail:serve            # start, or reuse the one already running
+node ace sail:serve --status   # is it up? who started it?
+node ace sail:serve --restart  # after a migration, a .env or a dependency change
+node ace sail:serve --stop     # done with this worktree
+```
+
+Sail containerizes services, not the app: the app runs on the host under
+`node ace serve --hmr`. That is fine for one person in one terminal, and
+awkward as soon as a worktree has more than one user — a developer and a
+reviewer, or several AI agents taking turns on the same branch. Each one
+starts its own `serve`, the second one finds the port taken, and nobody knows
+whether the process they see is safe to kill.
+
+`sail:serve` makes the app a per-worktree singleton:
+
+- **The first call starts it**, detached in its own process group, on the
+  worktree `serve` port, and waits until it answers.
+- **Every later call reuses it** — it answers `reused: true` with the same
+  `pid`, `local` URL and the `startedBy` of whoever started it. A call that
+  lands while the app is still booting waits for that boot instead of racing a
+  second process.
+- **`--stop` ends it** for everyone: the whole process group (`serve`, the
+  forked app, Vite) gets SIGTERM, and SIGKILL after 10 seconds.
+
+```json
+{
+  "projectName": "shop-feature-login",
+  "appRoot": "/code/shop-feature-login",
+  "pid": 48213,
+  "port": 4012,
+  "local": "http://127.0.0.1:4012",
+  "mode": "hmr",
+  "logFile": "/home/me/.sail/serve/shop-feature-login.log",
+  "startedAt": "2026-10-25T12:00:00.000Z",
+  "startedBy": "dev-agent",
+  "running": true,
+  "reused": false
+}
+```
+
+## The port
+
+The port is the one [`sail:share`](/docs/sail/sharing) exposes: the first
+`PORT` in the dot-env loader chain (`.env.<env>.local`, `.env.local`,
+`.env.<env>`, `.env`), else `3333`, plus the deterministic
+[worktree offset](/docs/sail/worktrees). Sail passes it to the process as
+`PORT`, so the app listens there whether or not your `@adonisjs/core` has the
+worktree-port patch. `--port` overrides it.
+
+When the port is already held by a process sail did not start — a `serve`
+someone ran by hand — sail refuses instead of guessing:
+
+```json
+{
+  "error": "Port 4012 is already in use by a process sail:serve did not start",
+  "hint": "Stop that process (or pass --port), then re-run"
+}
+```
+
+## Environment
+
+The process inherits the environment of the call that starts it, so extra
+variables are a prefix. Typical for a preview behind a tunnel or a private
+network, where links and assets must use the public URL:
+
+```bash
+VITE_API_URL=https://preview.example.dev node ace sail:serve --by dev-agent
+```
+
+<Callout type="warn">
+  Only the call that **starts** the app applies its environment. A later call
+  that reuses it changes nothing — use `--restart` to apply a new environment.
+</Callout>
+
+## Modes
+
+| Flag | Runs | Use when |
+| --- | --- | --- |
+| *(default)* | `node ace serve --hmr` | code edits should land without a restart |
+| `--watch` | `node ace serve --watch` | the app does not support HMR |
+| `--no-hmr` | `node ace serve` | you restart by hand (`--restart`) |
+
+## Failures
+
+An app that exits before answering, or does not answer within `--wait`
+seconds (default 120, then sail stops it), fails with exit code `1` and the
+last lines of its log in `hint` — usually the env validation or the
+connection error that killed the boot. Either way the entry is cleared, so
+the next call starts fresh.
+
+## State
+
+One JSON file and one log per compose project, under `~/.sail/serve/`
+(`$SAIL_HOME/serve/` when set): nothing is written into the app, and every
+worktree of every app has its own entry. `sail:serve --status` reads it; the
+log is plain `serve` output, `tail -f` friendly.

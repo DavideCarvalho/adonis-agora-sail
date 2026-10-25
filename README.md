@@ -16,6 +16,7 @@ node ace add @adonis-agora/sail
 node ace sail:install   # scan package.json + env.ts + configs, write compose.yml, wire env
 node ace sail:up        # start + wait for healthchecks, sync ports into .env.local
 node ace sail:psql      # psql REPL (or -- -c 'select 1')
+node ace sail:serve     # app in the background, shared per worktree (--stop, --restart)
 node ace sail:share     # public tunnel URL for previews and webhooks
 ```
 

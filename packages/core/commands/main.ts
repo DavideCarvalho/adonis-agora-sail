@@ -11,6 +11,7 @@ import SailPrune from './sail_prune.js';
 import SailPs from './sail_ps.js';
 import SailPsql from './sail_psql.js';
 import SailRedis from './sail_redis.js';
+import SailServe from './sail_serve.js';
 import SailShare from './sail_share.js';
 import SailSyncEnv from './sail_sync_env.js';
 import SailUp from './sail_up.js';
@@ -21,8 +22,8 @@ import SailUp from './sail_up.js';
  * `configure`). A {@link ListLoader} exposes the command metadata and
  * constructors to the ace kernel: `sail:install`, `sail:up`, `sail:down`,
  * `sail:ps`, `sail:logs`, `sail:info`, `sail:exec`, `sail:prune`,
- * `sail:sync-env`, `sail:psql`, `sail:mysql`, `sail:redis`, `sail:share` and
- * `sail:domain`.
+ * `sail:sync-env`, `sail:psql`, `sail:mysql`, `sail:redis`, `sail:serve`,
+ * `sail:share` and `sail:domain`.
  *
  * `@adonisjs/core` is an *optional* peer of this otherwise framework-free core —
  * only this `./commands` subpath imports it, so the main entrypoint stays
@@ -41,6 +42,7 @@ const loader = new ListLoader([
   SailPsql,
   SailMysql,
   SailRedis,
+  SailServe,
   SailShare,
   SailDomain,
 ]);

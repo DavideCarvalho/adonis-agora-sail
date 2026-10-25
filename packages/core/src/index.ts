@@ -145,6 +145,22 @@ export {
   updateSailConfig,
   updateSailConfigContent,
 } from './sail_config.js';
+export type { ServeHealth, ServeMode, ServePaths, ServeState } from './serve.js';
+export {
+  clearServeState,
+  isProcessAlive,
+  readServeState,
+  SERVE_READY_TIMEOUT_MS,
+  SERVE_STOP_GRACE_MS,
+  serveArgs,
+  serveHealth,
+  serveLogTail,
+  servePaths,
+  startServe,
+  stopServe,
+  waitForServe,
+  writeServeState,
+} from './serve.js';
 export {
   DEFAULT_OBJECT_STORAGE,
   GARAGE_ACCESS_KEY,
