@@ -20,6 +20,7 @@ node ace sail:ps                # container state, health, published ports
 node ace sail:psql              # psql REPL — or -- -c 'select 1' (also sail:mysql, sail:redis)
 node ace sail:logs redis --tail 100
 node ace sail:exec redis -- redis-cli ping
+node ace sail:serve             # app in the background, reused per worktree (--status/--stop/--restart)
 node ace sail:share             # public tunnel URL for previews and webhooks
 node ace sail:down              # stop this worktree's stack
 node ace sail:prune --dry-run   # stacks and volumes left behind by deleted worktrees

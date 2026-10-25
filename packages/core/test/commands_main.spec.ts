@@ -36,10 +36,10 @@ describe('commands barrel', () => {
     );
   });
 
-  it('exposes the fourteen sail commands', async () => {
+  it('exposes the fifteen sail commands', async () => {
     const metaData = await getMetaData();
 
-    expect(metaData).toHaveLength(14);
+    expect(metaData).toHaveLength(15);
     expect(metaData.map((command) => command.commandName)).toEqual(
       expect.arrayContaining([
         'sail:install',
@@ -54,6 +54,7 @@ describe('commands barrel', () => {
         'sail:psql',
         'sail:mysql',
         'sail:redis',
+        'sail:serve',
         'sail:share',
         'sail:domain',
       ]),

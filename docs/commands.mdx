@@ -6,7 +6,7 @@ icon: Terminal
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-`node ace add @adonis-agora/sail` registers `@adonis-agora/sail/commands` in `adonisrc.ts`, which exposes fourteen commands: `sail:install`, `sail:up`, `sail:down`, `sail:ps`, `sail:logs`, `sail:info`, `sail:exec`, `sail:prune`, `sail:sync-env`, `sail:psql`, `sail:mysql`, `sail:redis`, `sail:share` and `sail:domain`. None of them boots the application, so they work on a half-configured app.
+`node ace add @adonis-agora/sail` registers `@adonis-agora/sail/commands` in `adonisrc.ts`, which exposes fifteen commands: `sail:install`, `sail:up`, `sail:down`, `sail:ps`, `sail:logs`, `sail:info`, `sail:exec`, `sail:prune`, `sail:sync-env`, `sail:psql`, `sail:mysql`, `sail:redis`, `sail:serve`, `sail:share` and `sail:domain`. None of them boots the application, so they work on a half-configured app.
 
 ## Conventions shared by every command
 
@@ -23,7 +23,7 @@ import { Callout } from 'fumadocs-ui/components/callout';
 }
 ```
 
-**Two preflights** guard the docker-backed commands. The compose-file check fails with `No compose file found at <path>` / hint `Run "node ace sail:install" first to generate it`. The docker check runs `docker compose version --short` and fails with either `docker is not installed or not on PATH` or `docker compose is not usable: <stderr>`, both hinting `Install Docker (or start the daemon) and try again`. `sail:info`, `sail:sync-env` and `sail:share` need neither; `sail:prune` needs docker but not a compose file.
+**Two preflights** guard the docker-backed commands. The compose-file check fails with `No compose file found at <path>` / hint `Run "node ace sail:install" first to generate it`. The docker check runs `docker compose version --short` and fails with either `docker is not installed or not on PATH` or `docker compose is not usable: <stderr>`, both hinting `Install Docker (or start the daemon) and try again`. `sail:info`, `sail:sync-env`, `sail:serve` and `sail:share` need neither; `sail:prune` needs docker but not a compose file.
 
 **Exit codes**: `0` on success, `1` for a sail-level failure (missing compose file, unusable docker, flag conflicts, refusals), and the child's own code whenever a child is what failed — `docker compose` for `sail:up` / `sail:down` / `sail:logs`, the in-container command for `sail:exec`, the client for a one-shot service shell, the attached process for `sail:logs --follow` and the REPLs. Docker's stderr is truncated to its last 8 non-blank lines in the message — the full log is one `sail:logs` away.
 
@@ -338,6 +338,14 @@ The status payload (`--json`, no flags):
 
 `--enable` adds `caInstalled` (whether the mkcert CA is trusted yet) and `unresolved` (hostnames the system resolver does not answer for — browsers still reach those). Full walkthrough: [Local domains](/docs/sail/domains).
 
+## `sail:serve`
+
+```bash
+node ace sail:serve [--status | --stop | --restart] [--port 3333] [--watch | --no-hmr] [--by <name>] [--wait 120] [--json]
+```
+
+Runs the app in the background — `node ace serve --hmr`, detached in its own process group — once per worktree, so everyone working on that worktree (you, a teammate, several AI agents) shares one process instead of each starting and killing their own. Without a mode flag it is idempotent: an app already answering is reported with `reused: true`; one still booting is waited for rather than raced; otherwise sail starts it on the worktree `serve` port (dot-env `PORT` + worktree offset, exactly what `sail:share` exposes, forced through `PORT` so it does not depend on the core's worktree-port patch), waits until it answers and prints `{ running, reused, pid, port, local, mode, logFile, startedAt, startedBy, projectName, appRoot }`. `--status` reports without starting (`health: running | starting`, or `{ running: false }`), `--stop` stops the whole group (SIGINT — what `serve` treats as Ctrl+C — then SIGKILL after 10s) and prints `{ stopped, forced }`, `--restart` is stop + start — `--hmr` already picks up code edits, restart is for migrations, `.env` or dependency changes. `--watch` serves with `--watch`, `--no-hmr` with neither. `--by` (or `$SAIL_SERVE_BY`) records who started it. The process inherits the caller's environment, so extra variables are a prefix: `VITE_API_URL=https://… node ace sail:serve`. A port already held by something sail did not start exits `1` with `Port <n> is already in use by a process sail:serve did not start`; an app that exits, or does not answer within `--wait` seconds (then stopped), exits `1` with the last log lines in `hint`. State and logs live in `~/.sail/serve/<project>.{json,log}` (`$SAIL_HOME` moves them), never in the app. Walkthrough: [Serving](/docs/sail/serving).
+
 ## `sail:share`
 
 ```bash
@@ -352,7 +360,7 @@ Everything above collapses into a short contract, which is also what `sail:insta
 
 - output is JSON by default; `--no-json` restores human text;
 - no command prompts, and none hang waiting for input;
-- `sail:up`, `sail:down`, `sail:sync-env` and `sail:prune` are idempotent and safe to retry;
+- `sail:up`, `sail:down`, `sail:sync-env`, `sail:prune` and `sail:serve` are idempotent and safe to retry — `sail:serve` reuses the worktree's running app, so agents never start a second one;
 - interactive paths (`sail:psql` with no args, `sail:logs --follow`) fail fast with the exact non-interactive re-run in the `hint` field;
 - a failing query fails the command with the inner exit code, `sail:exec` and the service shells alike.
 

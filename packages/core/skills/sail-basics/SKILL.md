@@ -25,7 +25,8 @@ sources:
 
 Sail runs backing services (Postgres, Redis, Mailpit, S3-compatible object
 storage) in Docker while
-the app itself runs on the host with `node ace serve --hmr`. Every git
+the app itself runs on the host via `node ace sail:serve` (which starts
+`node ace serve --hmr` detached, once per worktree). Every git
 worktree gets **isolated containers and shifted host ports** automatically —
 never hardcode `5432` outside the main checkout.
 
@@ -61,7 +62,9 @@ eval $(node ace sail:info --env)  # export DB_/REDIS_/SMTP_/S3_/AWS_ vars (fallb
 No `eval` needed in the normal flow: `sail:up` / `sail:sync-env` write
 the worktree's ports into `.env.local` (plus `.env.test.local`, which is
 what Adonis reads under `NODE_ENV=test`), and Adonis loads those files
-over `.env` on its own. Just boot the app.
+over `.env` on its own. Boot the app with `node ace sail:serve` — it is
+idempotent and reuses the worktree's running app instead of starting a
+second one; never start your own `node ace serve`.
 
 ## What install scans (and wires for you)
 
@@ -114,6 +117,7 @@ node ace sail:exec redis -- redis-cli ping # one-shot, exits with the child's ow
 node ace sail:psql                         # psql REPL (or -- -c 'select 1')
 node ace sail:mysql -- -e 'show tables'    # one-shot, exits with the child's own code
 node ace sail:redis -- ping                # redis-cli REPL (or one-shot)
+node ace sail:serve                       # background app, once per worktree (reuses; `--status` / `--stop` / `--restart`)
 node ace sail:share                        # public tunnel URL for the app
 node ace sail:down               # stop this worktree's stack
 node ace sail:prune --dry-run    # stacks left behind by deleted worktrees
@@ -163,7 +167,7 @@ keys the framework reads itself appear only as `KEY: Env.schema.…()` in
 
 ```bash
 node ace sail:sync-env  # re-sync ports without touching containers
-varlock run -- node ace serve --hmr        # boot with resolved + validated env
+varlock run -- node ace sail:serve         # boot with resolved + validated env, shared per worktree
 varlock run -- node ace migration:run      # same for migrations
 ```
 

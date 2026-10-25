@@ -17,6 +17,7 @@ const SECTION_BODY = [
   '- Start services with `node ace sail:up` (idempotent, waits for healthchecks); stop with `node ace sail:down`.',
   '- Each git worktree gets isolated containers and shifted host ports. Never hardcode ports: run `node ace sail:info --json` for the actual ports, dashboards and connection env.',
   '- Status and logs: `node ace sail:ps --json`, `node ace sail:logs --tail 100`.',
+  "- Run the app in the background with `node ace sail:serve` (idempotent: reuses the worktree's running app instead of starting a second one; JSON has `local` and `startedBy`); stop it with `node ace sail:serve --stop`, `--restart` after a migration or `.env` change.",
 ].join('\n');
 
 /**

@@ -52,8 +52,8 @@ unless you ask for `--json`.
 
 - **`--json` is the default.** Every command with a JSON shape prints it
   instead of prose: `sail:install`, `sail:up`, `sail:down`, `sail:ps`,
-  `sail:info`, `sail:logs`, `sail:sync-env`, `sail:prune`, `sail:share` and
-  the one-shot service shells.
+  `sail:info`, `sail:logs`, `sail:sync-env`, `sail:prune`, `sail:serve`,
+  `sail:share` and the one-shot service shells.
 - **No prompts, ever.** `sail:install` normally offers a multi-select when it
   detects nothing; under an agent it fails instead, printing the exact
   `--services=` flags to re-run with.
@@ -105,6 +105,22 @@ the output wrapped in JSON instead.
 registers. The process then stays alive until you kill it, with cloudflared's
 own logs forwarded to stderr so stdout stays clean.
 </Callout>
+
+## Several agents on one worktree
+
+A dev agent, a reviewer and a QA agent taking turns on the same branch should
+share **one** running app, not start one each. That is what
+[`sail:serve`](/docs/sail/serving) is for, and the managed `AGENTS.md` block
+says so:
+
+- every agent calls `node ace sail:serve --by <agent>` before it needs the
+  app — the first call starts it, every later one gets `reused: true` with the
+  same `local` URL and the `startedBy` of the agent that started it;
+- calls that race are serialized by a per-worktree lock, so two agents that
+  both found nothing running still end up with a single process;
+- nobody runs `node ace serve` by hand, and nobody stops an app it did not
+  start — whoever owns the end of the flow calls `sail:serve --stop`;
+- after a migration, an `.env` change or a dependency bump: `--restart`.
 
 ### Exit codes
 
