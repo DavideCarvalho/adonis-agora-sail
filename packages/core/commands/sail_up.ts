@@ -102,7 +102,10 @@ export default class SailUp extends SailBaseCommand {
       bootstrapped.push({ service: name, step: bootstrap.description });
     }
 
-    const { info } = await resolveStackInfo(this.app.appRoot);
+    // Reuse the context this command already resolved (no second `git worktree list`).
+    const { info } = await resolveStackInfo(this.app.appRoot, {
+      context: await this.sailContext(),
+    });
 
     const synced = await syncSailLocalEnvs(fileURLToPath(this.app.appRoot), info.appEnv);
     const envSync = synced.files.map((file) => `${file.file} ${file.action}`).join(', ');

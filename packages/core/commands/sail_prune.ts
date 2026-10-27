@@ -60,6 +60,13 @@ export default class SailPrune extends SailBaseCommand {
     const context = await this.sailContext();
     const docker = await this.docker();
 
+    // Both listings are independent reads: start the volume listing alongside
+    // the project listing instead of after it. Best-effort, see below.
+    const volumesListing = docker.lsVolumes().then(
+      (volumes) => volumes,
+      () => [] as ComposeVolume[],
+    );
+
     let projects: ComposeProject[];
     try {
       projects = await docker.lsProjects();
@@ -76,12 +83,7 @@ export default class SailPrune extends SailBaseCommand {
 
     // Best-effort: a daemon that lists projects but not volumes still gets
     // its orphan stacks stopped.
-    let allVolumes: ComposeVolume[] = [];
-    try {
-      allVolumes = await docker.lsVolumes();
-    } catch {
-      allVolumes = [];
-    }
+    const allVolumes = await volumesListing;
     const orphanVolumes = findOrphanVolumes(allVolumes, {
       appName: context.appName,
       orphanProjects: names,
@@ -118,8 +120,15 @@ export default class SailPrune extends SailBaseCommand {
 
     const removed: string[] = [];
     const failed: { name: string; error: string }[] = [];
-    for (const orphan of orphans) {
-      const result = await docker.downProject(orphan.name, { volumes: this.volumes });
+    // Each orphan is its own compose project, so stopping them is independent:
+    // run the `compose down`s concurrently, then report in the original order.
+    const results = await Promise.all(
+      orphans.map(async (orphan) => ({
+        orphan,
+        result: await docker.downProject(orphan.name, { volumes: this.volumes }),
+      })),
+    );
+    for (const { orphan, result } of results) {
       if (result.exitCode === 0) {
         removed.push(orphan.name);
       } else {

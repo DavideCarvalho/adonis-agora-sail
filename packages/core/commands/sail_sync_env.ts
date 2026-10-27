@@ -26,8 +26,10 @@ export default class SailSyncEnv extends SailBaseCommand {
   static override options: CommandOptions = { startApp: false };
 
   override async run(): Promise<void> {
-    const varlock = await detectVarlock(this.app.appRoot);
-    const { services, info } = await resolveStackInfo(this.app.appRoot);
+    const [varlock, { services, info }] = await Promise.all([
+      detectVarlock(this.app.appRoot),
+      resolveStackInfo(this.app.appRoot),
+    ]);
     if (services.length === 0) {
       this.failJsonAware(
         'No sail services enabled for this app',

@@ -29,7 +29,10 @@ export abstract class SailServiceShellCommand extends SailBaseCommand {
     if (!(await this.ensureComposeFile())) {
       return;
     }
-    const { services } = await resolveStackInfo(this.app.appRoot);
+    // ensureComposeFile already resolved the context — reuse it.
+    const { services } = await resolveStackInfo(this.app.appRoot, {
+      context: await this.sailContext(),
+    });
     if (!services.includes(this.shellService)) {
       this.failJsonAware(
         `The ${this.shellService} service is not enabled`,
