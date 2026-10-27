@@ -88,14 +88,24 @@ export function appEnvOptionsFromScan(scan: AppScan): AppEnvOptions {
  * the services enabled in the managed compose file. When the compose file
  * does not exist yet (fresh checkout, pre-install), it falls back to the
  * scan so `sail:info` can preview what `sail:install` would create.
+ *
+ * Pass `options.context` when the caller already resolved the
+ * {@link SailContext} for this app root, to skip resolving it again (a
+ * `git worktree list` round trip).
  */
-export async function resolveStackInfo(appRoot: URL): Promise<{
+export async function resolveStackInfo(
+  appRoot: URL,
+  options: { context?: SailContext } = {},
+): Promise<{
   context: SailContext;
   services: SailServiceName[];
   scan: AppScan;
   info: SailStackInfo;
 }> {
-  const [context, scan] = await Promise.all([resolveSailContext(appRoot), scanAppConfig(appRoot)]);
+  const [context, scan] = await Promise.all([
+    options.context ?? resolveSailContext(appRoot),
+    scanAppConfig(appRoot),
+  ]);
 
   let services: SailServiceName[] = [];
   try {

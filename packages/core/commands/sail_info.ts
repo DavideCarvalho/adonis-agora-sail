@@ -29,8 +29,10 @@ export default class SailInfo extends SailBaseCommand {
   declare env: boolean;
 
   override async run(): Promise<void> {
-    const { services, scan, info } = await resolveStackInfo(this.app.appRoot);
-    const varlock = await detectVarlock(this.app.appRoot);
+    const [{ services, scan, info }, varlock] = await Promise.all([
+      resolveStackInfo(this.app.appRoot),
+      detectVarlock(this.app.appRoot),
+    ]);
 
     if (services.length === 0) {
       this.failJsonAware(

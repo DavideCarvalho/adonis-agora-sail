@@ -1,20 +1,4 @@
-import { ListLoader } from '@adonisjs/core/ace';
-
-import SailDomain from './sail_domain.js';
-import SailDown from './sail_down.js';
-import SailExec from './sail_exec.js';
-import SailInfo from './sail_info.js';
-import SailInstall from './sail_install.js';
-import SailLogs from './sail_logs.js';
-import SailMysql from './sail_mysql.js';
-import SailPrune from './sail_prune.js';
-import SailPs from './sail_ps.js';
-import SailPsql from './sail_psql.js';
-import SailRedis from './sail_redis.js';
-import SailServe from './sail_serve.js';
-import SailShare from './sail_share.js';
-import SailSyncEnv from './sail_sync_env.js';
-import SailUp from './sail_up.js';
+import { LazySailLoader } from './lazy_loader.js';
 
 /**
  * The commands barrel for `@adonis-agora/sail`. An app registers it in its
@@ -29,23 +13,7 @@ import SailUp from './sail_up.js';
  * only this `./commands` subpath imports it, so the main entrypoint stays
  * dependency-free.
  */
-const loader = new ListLoader([
-  SailInstall,
-  SailUp,
-  SailDown,
-  SailPs,
-  SailLogs,
-  SailInfo,
-  SailExec,
-  SailPrune,
-  SailSyncEnv,
-  SailPsql,
-  SailMysql,
-  SailRedis,
-  SailServe,
-  SailShare,
-  SailDomain,
-]);
+const loader = new LazySailLoader(new URL('./commands.json', import.meta.url));
 
 export const getMetaData = loader.getMetaData.bind(loader);
 export const getCommand = loader.getCommand.bind(loader);
