@@ -7,9 +7,9 @@ const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const REPO_ROOT = join(PACKAGE_ROOT, '..', '..');
 
 describe('engines.node', () => {
-  it('promises Node 22, the oldest line Node still maintains', async () => {
+  it('promises Node 24, the floor AdonisJS 7 declares', async () => {
     const pkg = JSON.parse(await readFile(join(PACKAGE_ROOT, 'package.json'), 'utf8'));
-    expect(pkg.engines.node).toBe('>=22');
+    expect(pkg.engines.node).toBe('>=24');
   });
 
   it('is a floor CI actually tests, not just a number in package.json', async () => {

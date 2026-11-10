@@ -1,0 +1,54 @@
+---
+title: Migrating to 1.0
+description: The breaking changes in @adonis-agora/sail 1.0 — Node.js 24 as the floor and the MINIO_SETUP_NOTE export gone — each with the change to make.
+icon: ArrowUpCircle
+---
+
+Sail 1.0 has two breaking changes. The `sail:*` commands, their flags, their
+`--json` output and every file `sail:install` writes are unchanged, so an app
+that only runs the commands needs nothing beyond the Node.js version.
+
+```bash
+npm install -D @adonis-agora/sail@^1.0.0
+```
+
+## Node.js 24 or newer
+
+`engines.node` is now `>=24`, the same floor `@adonisjs/core` 7 declares. On
+Node.js 22 your package manager warns on install, and refuses to install under
+`engine-strict`.
+
+```jsonc
+// package.json — before
+{ "engines": { "node": ">=22" } }
+
+// package.json — after
+{ "engines": { "node": ">=24" } }
+```
+
+Pin the same line wherever the app runs ace commands: `.nvmrc`, `.node-version`,
+`volta`, or the `node-version` of your CI's setup step.
+
+## `MINIO_SETUP_NOTE` is removed
+
+The setup hint for the app's s3 disk is exported only as
+`OBJECT_STORAGE_SETUP_NOTE`. It applies to every object storage backend sail
+runs, not only MinIO. Same string, new name:
+
+```ts title="commands/check_storage.ts"
+// before
+import { MINIO_SETUP_NOTE } from '@adonis-agora/sail';
+
+// after
+import { OBJECT_STORAGE_SETUP_NOTE } from '@adonis-agora/sail';
+import { BaseCommand } from '@adonisjs/core/ace';
+
+export default class CheckStorage extends BaseCommand {
+  static commandName = 'storage:check';
+
+  async run() {
+    this.logger.info(OBJECT_STORAGE_SETUP_NOTE);
+  }
+}
+```
+

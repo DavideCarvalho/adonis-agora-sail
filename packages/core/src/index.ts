@@ -36,7 +36,6 @@ export {
   envValidationFor,
   findPgvectorMigration,
   formatAppScan,
-  MINIO_SETUP_NOTE,
   mergeServices,
   OBJECT_STORAGE_SETUP_NOTE,
   objectStorageSetupNote,
