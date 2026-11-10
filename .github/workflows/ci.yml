@@ -33,15 +33,14 @@ jobs:
 
       - run: pnpm check:package
 
-  # The test suite runs on Node 24 only: the engines floor, and the line
-  # `@adonisjs/core` 7 declares. Kept as a matrix so the engines spec can check
-  # that the floor is a version CI actually tests.
+  # Lint, typecheck and build run once on the pinned 24 above; the test suite
+  # runs on 24 (the engines floor, the line `@adonisjs/core` 7 declares) and 26.
   test:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        node: [24]
+        node: [24, 26]
     name: test (node ${{ matrix.node }})
     steps:
       - uses: actions/checkout@v7.0.1

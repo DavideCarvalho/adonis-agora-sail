@@ -882,16 +882,19 @@ describe('sail:install — AGENTS.md', () => {
     expect(output(kernel)).toContain('AGENTS.md kept (edited by hand');
   });
 
-  it('upgrades a 0.4 section that still holds the stock text', async () => {
+  it('keeps a section whose start marker has no checksum', async () => {
     const { kernel, path } = await createTestApp();
     await install(kernel, ['--no-json', '--services=redis']);
     const current = await readFile(join(path, 'AGENTS.md'), 'utf8');
-    const legacy = current.replace(/<!-- sail:start checksum=[0-9a-f]+ -->/, '<!-- sail:start -->');
-    await writeFile(join(path, 'AGENTS.md'), legacy, 'utf8');
+    const unmarked = current.replace(
+      /<!-- sail:start checksum=[0-9a-f]+ -->/,
+      '<!-- sail:start -->',
+    );
+    await writeFile(join(path, 'AGENTS.md'), unmarked, 'utf8');
 
     await install(kernel, ['--no-json', '--services=redis']);
 
-    expect(await readFile(join(path, 'AGENTS.md'), 'utf8')).toBe(current);
+    expect(await readFile(join(path, 'AGENTS.md'), 'utf8')).toBe(unmarked);
   });
 });
 

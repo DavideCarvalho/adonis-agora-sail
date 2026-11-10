@@ -54,8 +54,7 @@ const START_MARKER_PATTERN = /<!-- sail:start(?:\s+checksum=([0-9a-f]+))?\s*-->/
  *   text (a no-op when that is identical);
  * - markers whose body does not match → someone edited it (a translation, a
  *   house-style rewrite): left byte-for-byte as it is, reported as `kept`;
- * - markers without a checksum (written by sail 0.4 and earlier) → refreshed
- *   only while the body is still the stock text, kept otherwise.
+ * - markers without a checksum → treated as edited and kept.
  *
  * To get the stock text back, delete the section, markers included, and
  * re-run install.
@@ -73,10 +72,7 @@ export function updateAgentsMd(
   if (start && end !== -1) {
     const body = existing.slice(start.index + start[0].length, end);
     const checksum = start[1];
-    const pristine = checksum
-      ? agentsMdChecksum(body) === checksum
-      : body.trim() === SECTION_BODY.trim();
-    if (!pristine) {
+    if (!checksum || agentsMdChecksum(body) !== checksum) {
       return { content: existing, action: 'kept' };
     }
     const content = `${existing.slice(0, start.index)}${section}${existing.slice(end + AGENTS_MD_END.length)}`;

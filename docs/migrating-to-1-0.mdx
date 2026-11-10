@@ -1,12 +1,11 @@
 ---
 title: Migrating to 1.0
-description: The breaking changes in @adonis-agora/sail 1.0 — Node.js 24 as the floor and the MINIO_SETUP_NOTE export gone — each with the change to make.
+description: The breaking changes in @adonis-agora/sail 1.0 — Node.js 24 as the floor, the MINIO_SETUP_NOTE export gone, and AGENTS.md sections without a checksum no longer refreshed — each with the change to make.
 icon: ArrowUpCircle
 ---
 
-Sail 1.0 has two breaking changes. The `sail:*` commands, their flags, their
-`--json` output and every file `sail:install` writes are unchanged, so an app
-that only runs the commands needs nothing beyond the Node.js version.
+Sail 1.0 has three breaking changes. The `sail:*` commands, their flags and
+their `--json` output are unchanged.
 
 ```bash
 npm install -D @adonis-agora/sail@^1.0.0
@@ -52,3 +51,30 @@ export default class CheckStorage extends BaseCommand {
 }
 ```
 
+## `AGENTS.md` sections without a checksum are kept as is
+
+`sail:install` refreshes its `AGENTS.md` section only when the start marker
+carries a checksum (`<!-- sail:start checksum=… -->`). A section written by
+sail 0.4 or earlier has a bare `<!-- sail:start -->` marker, and 1.0 treats it
+as edited by hand: install leaves it alone and reports `kept`.
+
+```md title="AGENTS.md"
+<!-- before: written by sail 0.4 and earlier, never refreshed again -->
+<!-- sail:start -->
+## Sail (local dev services)
+…
+<!-- sail:end -->
+
+<!-- after: refreshed by every sail:install -->
+<!-- sail:start checksum=0123abcd4567 -->
+## Sail (local dev services)
+…
+<!-- sail:end -->
+```
+
+To move to the checksummed marker, do one of these:
+
+- run `node ace sail:install` once on the latest 0.x **before** upgrading, which
+  rewrites the stock section with a checksum;
+- or, on 1.0, delete the old section, markers included, and run
+  `node ace sail:install`; it appends a fresh one.
