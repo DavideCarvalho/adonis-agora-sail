@@ -1,0 +1,80 @@
+---
+title: Migrating to 1.0
+description: The breaking changes in @adonis-agora/sail 1.0 — Node.js 24 as the floor, the MINIO_SETUP_NOTE export gone, and AGENTS.md sections without a checksum no longer refreshed — each with the change to make.
+icon: ArrowUpCircle
+---
+
+Sail 1.0 has three breaking changes. The `sail:*` commands, their flags and
+their `--json` output are unchanged.
+
+```bash
+npm install -D @adonis-agora/sail@^1.0.0
+```
+
+## Node.js 24 or newer
+
+`engines.node` is now `>=24`, the same floor `@adonisjs/core` 7 declares. On
+Node.js 22 your package manager warns on install, and refuses to install under
+`engine-strict`.
+
+```jsonc
+// package.json — before
+{ "engines": { "node": ">=22" } }
+
+// package.json — after
+{ "engines": { "node": ">=24" } }
+```
+
+Pin the same line wherever the app runs ace commands: `.nvmrc`, `.node-version`,
+`volta`, or the `node-version` of your CI's setup step.
+
+## `MINIO_SETUP_NOTE` is removed
+
+The setup hint for the app's s3 disk is exported only as
+`OBJECT_STORAGE_SETUP_NOTE`. It applies to every object storage backend sail
+runs, not only MinIO. Same string, new name:
+
+```ts title="commands/check_storage.ts"
+// before
+import { MINIO_SETUP_NOTE } from '@adonis-agora/sail';
+
+// after
+import { OBJECT_STORAGE_SETUP_NOTE } from '@adonis-agora/sail';
+import { BaseCommand } from '@adonisjs/core/ace';
+
+export default class CheckStorage extends BaseCommand {
+  static commandName = 'storage:check';
+
+  async run() {
+    this.logger.info(OBJECT_STORAGE_SETUP_NOTE);
+  }
+}
+```
+
+## `AGENTS.md` sections without a checksum are kept as is
+
+`sail:install` refreshes its `AGENTS.md` section only when the start marker
+carries a checksum (`<!-- sail:start checksum=… -->`). A section written by
+sail 0.4 or earlier has a bare `<!-- sail:start -->` marker, and 1.0 treats it
+as edited by hand: install leaves it alone and reports `kept`.
+
+```md title="AGENTS.md"
+<!-- before: written by sail 0.4 and earlier, never refreshed again -->
+<!-- sail:start -->
+## Sail (local dev services)
+…
+<!-- sail:end -->
+
+<!-- after: refreshed by every sail:install -->
+<!-- sail:start checksum=0123abcd4567 -->
+## Sail (local dev services)
+…
+<!-- sail:end -->
+```
+
+To move to the checksummed marker, do one of these:
+
+- run `node ace sail:install` once on the latest 0.x **before** upgrading, which
+  rewrites the stock section with a checksum;
+- or, on 1.0, delete the old section, markers included, and run
+  `node ace sail:install`; it appends a fresh one.

@@ -15,7 +15,8 @@
     "agents",
     "---Reference---",
     "commands",
-    "troubleshooting"
+    "troubleshooting",
+    "migrating-to-1-0"
   ],
   "root": true,
   "description": "Docker-powered local dev services for AdonisJS — worktree-native isolated stacks, deterministic ports, and agent-friendly JSON output.",

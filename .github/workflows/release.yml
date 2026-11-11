@@ -49,7 +49,7 @@ jobs:
           cache: pnpm
           registry-url: 'https://registry.npmjs.org'
 
-      # Trusted publishing needs npm CLI >= 11.5.1; Node 22 still bundles npm 10.x.
+      # Trusted publishing needs npm CLI >= 11.5.1, newer than the npm some Node 24 releases bundle.
       #
       # Pinned to 11.x, NOT @latest: npm 12 changed `npm info <pkg> --json` to return an
       # array of manifests where 11 returned a single packument object. Changesets reads
@@ -72,6 +72,7 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
+      - run: pnpm check:package
 
       # A Renovate patch/minor bump automerges on its own and brings no changeset with it, so
       # the new dependency would reach npm only with the next hand-written changeset. This writes
@@ -219,6 +220,17 @@ jobs:
       # and still produces clean semver. Use it to try unreleased work: `pnpm add <pkg>@beta`.
       - uses: actions/checkout@v7.0.1
 
+      # Changesets refuses `version --snapshot` in pre mode. While `.changeset/pre.json` exists,
+      # every push to master already publishes a prerelease (`<pkg>@<tag>`), so say that instead
+      # of failing deep inside the version step.
+      - name: Refuse in pre mode
+        run: |
+          if [ -f .changeset/pre.json ]; then
+            tag=$(node -p "require('./.changeset/pre.json').tag")
+            echo "::error::Pre mode ($tag) is on: snapshots are disabled. Every push to master publishes under the '$tag' dist-tag; install with \`pnpm add <pkg>@$tag\`."
+            exit 1
+          fi
+
       - uses: pnpm/action-setup@v6.1.0
 
       - uses: actions/setup-node@v7.0.0
@@ -227,7 +239,7 @@ jobs:
           cache: pnpm
           registry-url: 'https://registry.npmjs.org'
 
-      # Trusted publishing needs npm CLI >= 11.5.1; Node 22 still bundles npm 10.x.
+      # Trusted publishing needs npm CLI >= 11.5.1, newer than the npm some Node 24 releases bundle.
       #
       # Pinned to 11.x, NOT @latest: npm 12 changed `npm info <pkg> --json` to return an
       # array of manifests where 11 returned a single packument object. Changesets reads

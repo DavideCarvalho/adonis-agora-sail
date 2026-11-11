@@ -52,13 +52,11 @@ describe('upsertAgentsMd', () => {
     expect(updated.content).toBe(`# My app\n\n${buildAgentsMdSection()}\n`);
   });
 
-  it('treats a checksum-less 0.4 section as stock only while its text is', () => {
-    const stock = buildAgentsMdSection().replace(
+  it('keeps a section whose start marker has no checksum, even with the stock text', () => {
+    const unmarked = buildAgentsMdSection().replace(
       /<!-- sail:start checksum=\w+ -->/,
       '<!-- sail:start -->',
     );
-    expect(updateAgentsMd(stock).action).toBe('updated');
-    const edited = stock.replace('Start services', 'Bring services up');
-    expect(updateAgentsMd(edited).action).toBe('kept');
+    expect(updateAgentsMd(unmarked)).toEqual({ content: unmarked, action: 'kept' });
   });
 });

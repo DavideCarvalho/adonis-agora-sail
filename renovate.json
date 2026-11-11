@@ -13,6 +13,13 @@
       "enabled": false
     },
     {
+      "description": "The Node the toolchain is pinned to (setup-node's `node-version` for build and release, `.nvmrc`) stays on the engines floor line. CI already tests the newer line in its matrix, so a major bump of the pin is policy, not maintenance.",
+      "matchManagers": ["github-actions", "nvm", "nodenv"],
+      "matchDepNames": ["node"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
       "description": "Patch, minor and pin bumps merge on their own once CI is green. These are the ones `release.yml` turns into an automatic patch release. `pin` is its own update type in Renovate rather than a flavour of patch, so it has to be named here or the initial pinning PR sits open forever. Same for `packageManager`, the pnpm version in package.json: it is neither a dependency nor a devDependency, so every pnpm bump used to wait for a person.",
       "matchDepTypes": ["dependencies", "devDependencies", "packageManager"],
       "matchUpdateTypes": ["patch", "minor", "pin"],

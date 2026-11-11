@@ -51,9 +51,6 @@ export interface AgoraSignal {
 export const OBJECT_STORAGE_SETUP_NOTE =
   "Object storage: add `endpoint: env.get('S3_ENDPOINT')` and `forcePathStyle: true` to the s3 disk in config/drive.ts — the local backend needs both";
 
-/** @deprecated Kept for imports from 0.4; use {@link OBJECT_STORAGE_SETUP_NOTE}. */
-export const MINIO_SETUP_NOTE = OBJECT_STORAGE_SETUP_NOTE;
-
 /**
  * The setup note for an app's s3 disk, or null when it already sets both an
  * endpoint and `forcePathStyle`. Without a parsed disk (object storage chosen
