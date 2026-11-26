@@ -305,6 +305,10 @@ describe('buildSailEnvBlock / upsertSailEnvBlock', () => {
     );
   });
 
+  it('refuses a value with a line break', () => {
+    expect(() => buildSailEnvBlock({ DB_HOST: '127.0.0.1\nNODE_OPTIONS=x' })).toThrow(/line break/);
+  });
+
   it('creates the file body when there is none', () => {
     expect(upsertSailEnvBlock(null, block)).toBe(`${block}\n`);
   });

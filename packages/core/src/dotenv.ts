@@ -1,6 +1,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { dotenvLine } from './env_values.js';
 import {
   buildSailEnvBlock,
   ensureGitignoreEntry,
@@ -43,6 +44,8 @@ export function ensureTrailingNewline(content: string): string {
  * appending keys that are not there yet. Returns the input unchanged (same
  * string) when every key already holds the wanted value — callers use that
  * for `unchanged` detection. A single trailing newline is normalized.
+ * Throws on a value with a line break (it would declare other variables) and
+ * escapes `$` so the env parser does not interpolate into it.
  */
 export function upsertDotEnvKeys(existing: string | null, values: Record<string, string>): string {
   const wanted = new Map(Object.entries(values));
@@ -50,7 +53,7 @@ export function upsertDotEnvKeys(existing: string | null, values: Record<string,
     return existing ?? '';
   }
   if (!existing || existing.trim().length === 0) {
-    return `${[...wanted].map(([key, value]) => `${key}=${value}`).join('\n')}\n`;
+    return `${[...wanted].map(([key, value]) => dotenvLine(key, value)).join('\n')}\n`;
   }
 
   let changed = false;
@@ -61,7 +64,7 @@ export function upsertDotEnvKeys(existing: string | null, values: Record<string,
   const out = lines.map((line) => {
     const key = /^([A-Z][A-Z0-9_]*)\s*=/.exec(line)?.[1];
     if (key && wanted.has(key)) {
-      const next = `${key}=${wanted.get(key)}`;
+      const next = dotenvLine(key, wanted.get(key) ?? '');
       wanted.delete(key);
       if (next !== line) {
         changed = true;
@@ -71,7 +74,7 @@ export function upsertDotEnvKeys(existing: string | null, values: Record<string,
     return line;
   });
   for (const [key, value] of wanted) {
-    out.push(`${key}=${value}`);
+    out.push(dotenvLine(key, value));
     changed = true;
   }
   if (!changed) {

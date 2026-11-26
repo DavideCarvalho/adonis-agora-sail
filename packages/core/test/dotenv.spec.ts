@@ -55,6 +55,21 @@ describe('readDotEnvKeySets', () => {
   });
 });
 
+describe('upsertDotEnvKeys value safety', () => {
+  it('refuses a value with a line break instead of writing a second variable', () => {
+    expect(() => upsertDotEnvKeys(null, { DB_HOST: 'x\nNODE_OPTIONS=--inspect' })).toThrow(
+      /line break/,
+    );
+    expect(() => upsertDotEnvKeys('DB_HOST=a\n', { DB_HOST: 'x\ny' })).toThrow(/line break/);
+  });
+
+  it('escapes $ so the env parser does not interpolate it', () => {
+    expect(upsertDotEnvKeys('DB_PASSWORD=a\n', { DB_PASSWORD: 'p$ss' })).toBe(
+      'DB_PASSWORD=p\\$ss\n',
+    );
+  });
+});
+
 describe('syncSailLocalEnvs', () => {
   it('writes the managed block to .env.local and .env.test.local and git-ignores both', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'sail-local-sync-'));

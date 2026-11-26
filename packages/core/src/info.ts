@@ -4,6 +4,7 @@ import { type AppEnvOptions, serviceAppEnv } from './app_env.js';
 import { type AppScan, scanAppConfig } from './app_scan.js';
 import { servicesInComposeFile } from './compose_file.js';
 import { resolveSailContext } from './context.js';
+import { shellAssignment } from './env_values.js';
 import { resolveHostPorts } from './ports.js';
 import { SERVICES } from './services.js';
 import type { SailContext, SailServiceName } from './types.js';
@@ -167,11 +168,13 @@ export function formatStackInfo(info: SailStackInfo): string {
 
 /**
  * Renders the stack's union app env as `KEY=value` lines, sorted by key.
- * Meant for `eval $(node ace sail:info --env)` — no header, no decoration.
+ * Meant for `eval "$(node ace sail:info --env)"` — no header, no decoration.
+ * A value that is not a plain shell word is single-quoted, so the output is
+ * always safe to `eval`; plain values (ports, hosts, urls) print unchanged.
  */
 export function formatAppEnv(info: SailStackInfo): string {
   return Object.entries(info.appEnv)
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .map(([key, value]) => `${key}=${value}`)
+    .map(([key, value]) => shellAssignment(key, value))
     .join('\n');
 }
