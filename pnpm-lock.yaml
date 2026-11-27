@@ -20,6 +20,9 @@ importers:
       '@changesets/cli':
         specifier: 3.0.1
         version: 3.0.1
+      '@tanstack/intent':
+        specifier: 0.5.6
+        version: 0.5.6
       publint:
         specifier: 0.3.25
         version: 0.3.25
