@@ -1,5 +1,11 @@
 # @adonis-agora/sail
 
+## 1.0.1
+
+### Patch Changes
+
+- [#28](https://github.com/DavideCarvalho/adonis-agora-sail/pull/28) [`039c2d2`](https://github.com/DavideCarvalho/adonis-agora-sail/commit/039c2d23742403277b64ab6f14f517737fe5bcb6) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Harden env output: `sail:info --env` single-quotes a value only when it is not a plain shell word (ports, hosts and urls print unchanged), and the docs now recommend `eval "$(node ace sail:info --env)"`. The `.env.local` / `.env.test.local` / `.env.schema` writers spell each value so AdonisJS and varlock both read it back exactly (`$` escaped, quoted when a `#`, quote or edge space needs it) and refuse a value with a line break.
+
 ## 1.0.0
 
 ### Major Changes

@@ -1,4 +1,4 @@
-export const VERSION = '1.0.0';
+export const VERSION = '1.0.1';
 
 // Re-exported here (not just via the `./configure` subpath) because `ace
 // configure` / `ace add` import the package root and look for a `configure`
