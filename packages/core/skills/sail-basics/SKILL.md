@@ -10,7 +10,7 @@ description: >
 metadata:
   type: core
   library: "@adonis-agora/sail"
-  library_version: "0.2.3"
+  library_version: "1.0.0"
   framework: adonisjs
 sources:
   - "DavideCarvalho/adonis-agora-sail:docs/getting-started.mdx"
