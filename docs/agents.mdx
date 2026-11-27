@@ -214,21 +214,23 @@ Update rules:
 
 ## The `sail-basics` skill
 
-Sail ships an agent skill in the package itself:
+Sail ships an agent skill inside the npm package (its `skills/` folder), so it
+always matches the version you installed. Load it with
+[TanStack Intent](https://github.com/TanStack/intent):
 
-- **Source:** `packages/core/skills/sail-basics/SKILL.md` in this repo.
-- **Distribution:** the package's `files` array includes `skills`, so after
-  installation it lives at
-  `node_modules/@adonis-agora/sail/skills/sail-basics/SKILL.md`. Nothing
-  copies it into your project — point your agent at that path, or symlink it
-  into your harness's skills directory (for example
-  `.claude/skills/sail-basics`).
-- **Format:** [intent](https://github.com/TanStack/intent)-compatible
-  frontmatter (`name`, `description`, `metadata.library`,
-  `metadata.library_version`, `sources`). CI validates it: the `Check Skills`
-  workflow runs `intent validate` on PRs touching `skills/**`, and after a
-  release `intent stale` opens a review PR when the skill has drifted from
-  the library.
+```bash
+npm i -D @tanstack/intent    # pnpm add -D @tanstack/intent
+npx intent install
+npx intent load @adonis-agora/sail#sail-basics
+```
+
+`intent install` asks which packages' skills to allow and writes a short
+skill-loading block into `AGENTS.md`; `npx intent hooks install` adds hooks that
+remind Claude Code, Codex and Copilot to load a matching skill before editing.
+Without Intent, point your agent at
+`node_modules/@adonis-agora/sail/skills/sail-basics/SKILL.md`.
+[AI agent skills](/docs/sail/agent-skills) has the full setup, including how to
+allow every Agora library without the prompt.
 
 What it teaches, in one line each:
 

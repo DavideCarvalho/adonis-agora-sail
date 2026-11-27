@@ -119,6 +119,7 @@ node ace sail:mysql -- -e 'show tables'    # one-shot, exits with the child's ow
 node ace sail:redis -- ping                # redis-cli REPL (or one-shot)
 node ace sail:serve                       # background app, once per worktree (reuses; `--status` / `--stop` / `--restart`)
 node ace sail:share                        # public tunnel URL for the app
+node ace sail:domain --enable              # opt-in: serve on <app>.localhost through a shared proxy
 node ace sail:down               # stop this worktree's stack
 node ace sail:prune --dry-run    # stacks left behind by deleted worktrees
 ```
@@ -193,7 +194,9 @@ ports.
 - `compose.yml` interpolates `${SAIL_*_PORT:-base}`: the committed file is
   identical in every worktree, sail injects offset ports at runtime, and a
   bare `docker compose up` still works with defaults.
-```
+- Several agents on one worktree share one app: each calls
+  `node ace sail:serve --by <agent>` (the first starts it, the rest get
+  `reused: true`); only whoever owns the end of the flow calls `--stop`.
 
 ## Core patterns
 
