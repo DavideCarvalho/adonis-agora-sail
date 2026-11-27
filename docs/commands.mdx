@@ -162,7 +162,7 @@ The command to use instead of hardcoding ports. It reads the compose file for th
 
 | Flag | Alias | Type | Default | Effect |
 | --- | --- | --- | --- | --- |
-| `--env` | — | boolean | `false` | Prints only sorted `KEY=value` lines, for `eval $(node ace sail:info --env)` |
+| `--env` | — | boolean | `false` | Prints only sorted `KEY=value` lines (a value is single-quoted only if it is not a plain shell word), for `eval "$(node ace sail:info --env)"` |
 | `--json` | — | boolean | agent-detected | Prints the stack object plus `scan` and `varlock` |
 
 `--env` is checked first and wins over `--json` — `sail:info --env` prints plain `KEY=value` lines even inside an agent. Human output is the stack summary, the config scan, and a closing hint that is either ``varlock detected — boot with `varlock run -- node ace serve --hmr` `` or `.env.local is synced by sail:up / sail:sync-env — just boot the app`.

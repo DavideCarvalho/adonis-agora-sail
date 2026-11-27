@@ -104,6 +104,12 @@ describe('formatAppEnv', () => {
     expect(lines).toContain('REDIS_PORT=6379');
     expect(lines).toEqual([...lines].sort());
   });
+
+  it('shell-quotes a value only when it is not a plain shell word', () => {
+    const info = buildStackInfo(buildSailContext('/apps/shop', 'shop', null), ['postgres']);
+    const text = formatAppEnv({ ...info, appEnv: { DB_PORT: '5432', DB_PASSWORD: 'a b$(id)' } });
+    expect(text.split('\n')).toEqual(["DB_PASSWORD='a b$(id)'", 'DB_PORT=5432']);
+  });
 });
 
 describe('resolveStackInfo', () => {

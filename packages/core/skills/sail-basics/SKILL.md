@@ -56,7 +56,7 @@ teammates on the same worktree name get the same ports). Query, don't guess:
 ```bash
 node ace sail:info              # human summary: ports, dashboards, app env
 node ace sail:info --json       # full stack object (default inside agents)
-eval $(node ace sail:info --env)  # export DB_/REDIS_/SMTP_/S3_/AWS_ vars (fallback)
+eval "$(node ace sail:info --env)"  # export DB_/REDIS_/SMTP_/S3_/AWS_ vars (fallback)
 ```
 
 No `eval` needed in the normal flow: `sail:up` / `sail:sync-env` write

@@ -14,7 +14,7 @@ import { SailBaseCommand } from './sail_base_command.js';
  * This is the command to reach for instead of hardcoding ports: host ports
  * shift per worktree by a deterministic offset, so `5432` is only right in
  * the main checkout. `--env` prints `KEY=value` lines for
- * `eval $(node ace sail:info --env)`; `--json` (the default inside AI
+ * `eval "$(node ace sail:info --env)"`; `--json` (the default inside AI
  * agents) prints the full stack object.
  */
 export default class SailInfo extends SailBaseCommand {
@@ -23,7 +23,7 @@ export default class SailInfo extends SailBaseCommand {
   static override options: CommandOptions = { startApp: false };
 
   @flags.boolean({
-    description: 'Print KEY=value lines for eval $(node ace sail:info --env)',
+    description: 'Print KEY=value lines for eval "$(node ace sail:info --env)"',
     default: false,
   })
   declare env: boolean;

@@ -43,7 +43,7 @@ describe('sail:info', () => {
     await command.exec();
 
     expect(command.exitCode).toBe(0);
-    // Meant for `eval $(node ace sail:info --env)`: sorted keys, nothing else.
+    // Meant for `eval "$(node ace sail:info --env)"`: sorted keys, nothing else.
     expect(output(kernel)).toBe(
       [
         'DB_DATABASE=app',

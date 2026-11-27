@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { type AppEnvOptions, serviceAppEnv } from './app_env.js';
+import { dotenvLine } from './env_values.js';
 import { resolveHostPorts } from './ports.js';
 import { SERVICES } from './services.js';
 import type { SailServiceDefinition, SailServiceName } from './types.js';
@@ -193,7 +194,7 @@ function schemaItemBlock(
   if (key.endsWith('_PORT')) {
     lines.push('# @type=number');
   }
-  lines.push(`${key}=${value}`);
+  lines.push(dotenvLine(key, value));
   return lines.join('\n');
 }
 
@@ -317,12 +318,13 @@ export function ensureSchemaSection(
  * (offset applied) as sorted `KEY=value` lines between markers. The block
  * carries the services' fixed dev credentials (`DB_PASSWORD`,
  * `AWS_SECRET_ACCESS_KEY`) next to the ports, which is why the file it lands
- * in is kept git-ignored.
+ * in is kept git-ignored. Values go through {@link dotenvLine}: a line break
+ * is refused, `$` is escaped.
  */
 export function buildSailEnvBlock(appEnv: Record<string, string>): string {
   const lines = Object.entries(appEnv)
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .map(([key, value]) => `${key}=${value}`);
+    .map(([key, value]) => dotenvLine(key, value));
   return [
     SAIL_ENV_START,
     '# Managed by @adonis-agora/sail — per-worktree service ports. Do not edit;',
